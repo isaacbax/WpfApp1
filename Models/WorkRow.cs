@@ -3,24 +3,30 @@ using System.ComponentModel;
 
 namespace WorkshopTracker.Models
 {
+    /// <summary>
+    /// One row in the workshop CSV (plus IsGroupRow for date-divider rows).
+    /// CSV columns:
+    /// RETAIL, OE, CUSTOMER, SERIAL, DAY DUE, DATE DUE, STATUS,
+    /// QTY, WHAT IS IT, PO, WHAT ARE WE DOING, PARTS, SHAFT, PRIORITY, LAST USER
+    /// </summary>
     public class WorkRow : INotifyPropertyChanged
     {
         private bool _isGroupRow;
-        private string? _retail;
-        private string? _oe;
-        private string? _customer;
-        private string? _serial;
-        private string? _dayDue;
+        private string _retail = string.Empty;
+        private string _oe = string.Empty;
+        private string _customer = string.Empty;
+        private string _serial = string.Empty;
+        private string _dayDue = string.Empty;
         private DateTime? _dateDue;
-        private string? _status;
-        private int _qty;
-        private string? _whatIsIt;
-        private string? _po;
-        private string? _whatAreWeDoing;
-        private string? _parts;
-        private string? _shaft;
-        private string? _priority;
-        private string? _lastUser;
+        private string _status = string.Empty;
+        private string _qty = string.Empty;
+        private string _whatIsIt = string.Empty;
+        private string _po = string.Empty;
+        private string _whatAreWeDoing = string.Empty;
+        private string _parts = string.Empty;
+        private string _shaft = string.Empty;
+        private string _priority = string.Empty;
+        private string _lastUser = string.Empty;
 
         public bool IsGroupRow
         {
@@ -28,31 +34,31 @@ namespace WorkshopTracker.Models
             set { _isGroupRow = value; OnPropertyChanged(nameof(IsGroupRow)); }
         }
 
-        public string? Retail
+        public string Retail
         {
             get => _retail;
             set { _retail = value; OnPropertyChanged(nameof(Retail)); }
         }
 
-        public string? OE
+        public string OE
         {
             get => _oe;
             set { _oe = value; OnPropertyChanged(nameof(OE)); }
         }
 
-        public string? Customer
+        public string Customer
         {
             get => _customer;
             set { _customer = value; OnPropertyChanged(nameof(Customer)); }
         }
 
-        public string? Serial
+        public string Serial
         {
             get => _serial;
             set { _serial = value; OnPropertyChanged(nameof(Serial)); }
         }
 
-        public string? DayDue
+        public string DayDue
         {
             get => _dayDue;
             set { _dayDue = value; OnPropertyChanged(nameof(DayDue)); }
@@ -64,84 +70,62 @@ namespace WorkshopTracker.Models
             set { _dateDue = value; OnPropertyChanged(nameof(DateDue)); }
         }
 
-        public string? Status
+        public string Status
         {
             get => _status;
             set { _status = value; OnPropertyChanged(nameof(Status)); }
         }
 
-        public int Qty
+        public string Qty
         {
             get => _qty;
             set { _qty = value; OnPropertyChanged(nameof(Qty)); }
         }
 
-        public string? WhatIsIt
+        public string WhatIsIt
         {
             get => _whatIsIt;
             set { _whatIsIt = value; OnPropertyChanged(nameof(WhatIsIt)); }
         }
 
-        public string? PO
+        public string PO
         {
             get => _po;
             set { _po = value; OnPropertyChanged(nameof(PO)); }
         }
 
-        public string? WhatAreWeDoing
+        public string WhatAreWeDoing
         {
             get => _whatAreWeDoing;
             set { _whatAreWeDoing = value; OnPropertyChanged(nameof(WhatAreWeDoing)); }
         }
 
-        public string? Parts
+        public string Parts
         {
             get => _parts;
             set { _parts = value; OnPropertyChanged(nameof(Parts)); }
         }
 
-        public string? Shaft
+        public string Shaft
         {
             get => _shaft;
             set { _shaft = value; OnPropertyChanged(nameof(Shaft)); }
         }
 
-        public string? Priority
+        public string Priority
         {
             get => _priority;
             set { _priority = value; OnPropertyChanged(nameof(Priority)); }
         }
 
-        public string? LastUser
+        public string LastUser
         {
             get => _lastUser;
             set { _lastUser = value; OnPropertyChanged(nameof(LastUser)); }
         }
 
-        public WorkRow Clone()
-        {
-            return new WorkRow
-            {
-                IsGroupRow = this.IsGroupRow,
-                Retail = this.Retail,
-                OE = this.OE,
-                Customer = this.Customer,
-                Serial = this.Serial,
-                DayDue = this.DayDue,
-                DateDue = this.DateDue,
-                Status = this.Status,
-                Qty = this.Qty,
-                WhatIsIt = this.WhatIsIt,
-                PO = this.PO,
-                WhatAreWeDoing = this.WhatAreWeDoing,
-                Parts = this.Parts,
-                Shaft = this.Shaft,
-                Priority = this.Priority,
-                LastUser = this.LastUser
-            };
-        }
-
         public event PropertyChangedEventHandler? PropertyChanged;
+
         protected void OnPropertyChanged(string propertyName) =>
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }

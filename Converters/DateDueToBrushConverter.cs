@@ -7,9 +7,9 @@ namespace WorkshopTracker.Converters
 {
     /// <summary>
     /// Colours DATE DUE:
-    /// - Before today: Red
-    /// - Today: Yellow
-    /// - After today: LightGreen
+    ///   - Before today: Red
+    ///   - Today: Yellow
+    ///   - After today: LightGreen
     /// </summary>
     public class DateDueToBrushConverter : IValueConverter
     {
@@ -33,6 +33,7 @@ namespace WorkshopTracker.Converters
 
             if (date.Date < today)
                 return Brushes.Red;
+
             if (date.Date == today)
                 return Brushes.Yellow;
 
@@ -41,8 +42,7 @@ namespace WorkshopTracker.Converters
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         {
-            // We only use this converter one-way (date -> brush),
-            // so we don't need to convert back.
+            // One-way converter only
             return Binding.DoNothing;
         }
     }

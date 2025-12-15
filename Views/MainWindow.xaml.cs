@@ -1,948 +1,793 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using WorkshopTracker.Models;
-using WorkshopTracker.Services;
 
 namespace WorkshopTracker.Views
 {
     public partial class MainWindow : Window
     {
-        private string _branch = "headoffice";
-        private string _currentUser = "root";
-        private ConfigServices? _config;
+        private readonly string _username;
+        private readonly string _branch;
 
-        private static readonly string[] DateFormats =
-        {
-            "dd/MM/yyyy", "d/M/yyyy", "d/MM/yyyy", "dd/M/yyyy"
-        };
+        private const string BaseFolder = @"S:\Public\DesignData\";
 
         private ObservableCollection<WorkRow> _openRows = new();
         private ObservableCollection<WorkRow> _closedRows = new();
 
-        private ICollectionView? _openView;
-        private ICollectionView? _closedView;
+        private bool _isLoading;
 
-        private Point _dragStartPoint;
-        private DataGrid? _dragSourceGrid;
+        // Live-refresh
+        private FileSystemWatcher? _openWatcher;
+        private FileSystemWatcher? _closedWatcher;
+        private bool _suppressWatcher;
+
+        // Are we currently editing a row?
+        private bool _isEditingRow;
+        // Did a file change happen while we were editing?
+        private bool _pendingReload;
+
+        // Last known write time for each watched file (to ignore duplicate events)
+        private readonly Dictionary<string, DateTime> _fileWriteTimes = new();
+
+        // Debounce timer so we don't reload repeatedly
+        private DispatcherTimer? _reloadDebounceTimer;
+
+        // Drag & drop
+        private Point _dragStart;
         private WorkRow? _draggedRow;
+        private DataGrid? _dragSourceGrid;
 
-        private FileSystemWatcher? _watcher;
-        private bool _isReloading;
-        private bool _suppressDateEvents;
-        private bool _initialContentRendered;
-
-        // Always fall back to this folder if _config is null
-        private string BaseFolder =>
-            _config?.BaseFolder ?? @"S:\Public\DesignData\";
-
-        // -------- default ctor (used by designer / StartupUri) ----------
-        public MainWindow()
+        public MainWindow(string username, string branch)
         {
-            CommonInit("headoffice", "root", null);
-        }
+            InitializeComponent();
 
-        // -------- ctor used from LoginWindow ----------
-        public MainWindow(string branch, string currentUser, ConfigServices config)
-        {
-            CommonInit(branch, currentUser, config);
-        }
-
-        // shared setup for both constructors
-        private void CommonInit(string branch, string currentUser, ConfigServices? config)
-        {
-            try
-            {
-                InitializeComponent();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show(
-                    ex.ToString(),
-                    "InitializeComponent failed in MainWindow",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
-
-                throw;
-            }
-
+            _username = username;
             _branch = branch;
-            _currentUser = currentUser;
-            _config = config;
 
-            DataContext = this;
+            Title = $"Workshop Tracker - {branch}";
+            StatusTextBlock.Text = $"Logged in as {_username} ({_branch})";
 
-            OpenGrid.CellEditEnding += WorkGrid_CellEditEnding;
-            ClosedGrid.CellEditEnding += WorkGrid_CellEditEnding;
-
-            // Load data AFTER first paint so UI doesn't stay white
-            this.ContentRendered += MainWindow_ContentRendered;
-
-            InitFileWatcher();
+            Loaded += MainWindow_Loaded;
         }
 
-        private void MainWindow_ContentRendered(object? sender, EventArgs e)
+        protected override void OnClosed(EventArgs e)
         {
-            if (_initialContentRendered)
-                return;
+            base.OnClosed(e);
+            _openWatcher?.Dispose();
+            _closedWatcher?.Dispose();
+        }
 
-            _initialContentRendered = true;
+        private void MainWindow_Loaded(object? sender, RoutedEventArgs e)
+        {
+            LoadData();
+            SetupFileWatchers();
+        }
+
+        // ---------- FILE WATCHERS (LIVE REFRESH) ----------
+
+        private void SetupFileWatchers()
+        {
+            try
+            {
+                _openWatcher?.Dispose();
+                _closedWatcher?.Dispose();
+
+                string openFile = Path.Combine(BaseFolder, $"{_branch}open.csv");
+                string closedFile = Path.Combine(BaseFolder, $"{_branch}closed.csv");
+
+                if (File.Exists(openFile))
+                    _openWatcher = CreateWatcher(BaseFolder, $"{_branch}open.csv");
+
+                if (File.Exists(closedFile))
+                    _closedWatcher = CreateWatcher(BaseFolder, $"{_branch}closed.csv");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error setting up file watchers:\n{ex.Message}",
+                    "Watcher Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private FileSystemWatcher CreateWatcher(string folder, string fileName)
+        {
+            var watcher = new FileSystemWatcher(folder, fileName)
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName
+            };
+
+            watcher.Changed += (s, e) => OnCsvChanged(e);
+            watcher.Created += (s, e) => OnCsvChanged(e);
+            watcher.Renamed += (s, e) => OnCsvChanged(e);
+
+            watcher.EnableRaisingEvents = true;
+            return watcher;
+        }
+
+        private void OnCsvChanged(FileSystemEventArgs e)
+        {
+            // Always marshal back to UI thread
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var path = e.FullPath;
+
+                // Get latest write time
+                DateTime lastWrite;
+                try
+                {
+                    lastWrite = File.GetLastWriteTimeUtc(path);
+                }
+                catch
+                {
+                    // File might be temporarily locked / removed
+                    return;
+                }
+
+                // Ignore duplicate events for same write time
+                if (_fileWriteTimes.TryGetValue(path, out var known) && lastWrite == known)
+                    return;
+
+                _fileWriteTimes[path] = lastWrite;
+
+                // Ignore our own save cycle
+                if (_suppressWatcher)
+                    return;
+
+                // If user is currently editing, queue a single reload for after they finish
+                if (_isEditingRow)
+                {
+                    _pendingReload = true;
+                    return;
+                }
+
+                ScheduleReload();
+            }), DispatcherPriority.Background);
+        }
+
+        private void ScheduleReload()
+        {
+            if (_reloadDebounceTimer == null)
+            {
+                _reloadDebounceTimer = new DispatcherTimer
+                {
+                    Interval = TimeSpan.FromSeconds(1)
+                };
+                _reloadDebounceTimer.Tick += (s, e) =>
+                {
+                    _reloadDebounceTimer!.Stop();
+                    StatusTextBlock.Text = "External changes detected, reloading…";
+                    LoadData();
+                };
+            }
+
+            _reloadDebounceTimer.Stop();
+            _reloadDebounceTimer.Start();
+        }
+
+        // ---------- LOAD / SAVE & AUTO SORT ----------
+
+        private void LoadData()
+        {
+            if (_isLoading) return;
+            _isLoading = true;
 
             try
             {
-                ReloadFromDisk();
+                string openPath = Path.Combine(BaseFolder, $"{_branch}open.csv");
+                string closedPath = Path.Combine(BaseFolder, $"{_branch}closed.csv");
+
+                var openCore = ReadCsv(openPath);
+                var closedCore = ReadCsv(closedPath);
+
+                // Auto-move picked up / cancelled from open -> closed
+                var toMove = openCore
+                    .Where(r =>
+                        !r.IsGroupRow &&
+                        (EqualsIgnoreCase(r.Status, "picked up") ||
+                         EqualsIgnoreCase(r.Status, "cancelled")))
+                    .ToList();
+
+                foreach (var r in toMove)
+                {
+                    openCore.Remove(r);
+                    closedCore.Add(r);
+                }
+
+                _openRows = new ObservableCollection<WorkRow>(InsertDayDividers(openCore));
+                _closedRows = new ObservableCollection<WorkRow>(InsertDayDividers(closedCore));
+
+                OpenGrid.ItemsSource = _openRows;
+                ClosedGrid.ItemsSource = _closedRows;
+
+                StatusTextBlock.Text =
+                    $"Loaded Open: {openCore.Count} items | Closed: {closedCore.Count} items";
             }
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    ex.ToString(),
-                    "ReloadFromDisk error",
+                    $"Error loading CSV files for branch '{_branch}':\n{ex.Message}",
+                    "Load Error",
                     MessageBoxButton.OK,
                     MessageBoxImage.Error);
-                StatusTextBlock.Text = "Error loading data – see message.";
-            }
-        }
-
-        #region Paths & IO
-
-        private string GetOpenPath() =>
-            Path.Combine(BaseFolder, $"{_branch}open.csv");
-
-        private string GetClosedPath() =>
-            Path.Combine(BaseFolder, $"{_branch}closed.csv");
-
-        private void LoadAll()
-        {
-            try
-            {
-                var openPath = GetOpenPath();
-                var closedPath = GetClosedPath();
-
-                if (!File.Exists(openPath))
-                {
-                    StatusTextBlock.Text = $"Open CSV not found: {openPath}";
-                    _openRows = new ObservableCollection<WorkRow>();
-                }
-                else
-                {
-                    var openList = LoadFromCsv(openPath);
-                    _openRows = new ObservableCollection<WorkRow>(openList);
-                }
-
-                if (!File.Exists(closedPath))
-                {
-                    StatusTextBlock.Text += $"   Closed CSV not found: {closedPath}";
-                    _closedRows = new ObservableCollection<WorkRow>();
-                }
-                else
-                {
-                    var closedList = LoadFromCsv(closedPath);
-                    _closedRows = new ObservableCollection<WorkRow>(closedList);
-                }
-
-                StatusTextBlock.Text = $"Loaded open={_openRows.Count}, closed={_closedRows.Count}";
-            }
-            catch (Exception ex)
-            {
-                StatusTextBlock.Text = $"Error loading CSVs: {ex.Message}";
-                _openRows = new ObservableCollection<WorkRow>();
-                _closedRows = new ObservableCollection<WorkRow>();
-            }
-        }
-
-        private void SaveAll()
-        {
-            try
-            {
-                if (_watcher != null)
-                    _watcher.EnableRaisingEvents = false;
-
-                SaveToCsv(GetOpenPath(), _openRows);
-                SaveToCsv(GetClosedPath(), _closedRows);
-
-                StatusTextBlock.Text = $"Saved at {DateTime.Now:T}";
-            }
-            catch (Exception ex)
-            {
-                StatusTextBlock.Text = $"Error saving CSVs: {ex.Message}";
             }
             finally
             {
-                if (_watcher != null)
-                    _watcher.EnableRaisingEvents = true;
+                _isLoading = false;
             }
         }
 
-        /// <summary>
-        /// Robust CSV line splitter that understands quotes and commas inside fields.
-        /// </summary>
-        private static string[] SplitCsvLine(string line)
+        private static bool EqualsIgnoreCase(string? a, string b) =>
+            string.Equals(a ?? string.Empty, b, StringComparison.OrdinalIgnoreCase);
+
+        private List<WorkRow> ReadCsv(string path)
         {
-            var result = new List<string>();
-            if (string.IsNullOrEmpty(line))
+            var items = new List<WorkRow>();
+
+            if (!File.Exists(path))
+                return items;
+
+            string[] lines;
+
+            try
             {
-                result.Add(string.Empty);
-                return result.ToArray();
+                lines = ReadAllLinesShared(path);
+            }
+            catch (IOException ioEx)
+            {
+                MessageBox.Show(
+                    $"Could not read file:\n{path}\n\n{ioEx.Message}",
+                    "Read Error",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return items;
             }
 
-            bool inQuotes = false;
-            var current = new StringBuilder();
+            if (lines.Length <= 1)
+                return items;
 
-            for (int i = 0; i < line.Length; i++)
-            {
-                char c = line[i];
-
-                if (c == '"')
-                {
-                    if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
-                    {
-                        // Escaped quote
-                        current.Append('"');
-                        i++; // skip second quote
-                    }
-                    else
-                    {
-                        inQuotes = !inQuotes;
-                    }
-                }
-                else if (c == ',' && !inQuotes)
-                {
-                    result.Add(current.ToString());
-                    current.Clear();
-                }
-                else
-                {
-                    current.Append(c);
-                }
-            }
-
-            result.Add(current.ToString());
-            return result.ToArray();
-        }
-
-        /// <summary>
-        /// Load rows from CSV.
-        /// Supports both legacy 14-column files and the newer 15-column format
-        /// that includes "LAST USER" as the final column.
-        /// Works even when fields contain commas (quoted).
-        /// </summary>
-        private static List<WorkRow> LoadFromCsv(string path)
-        {
-            var result = new List<WorkRow>();
-
-            var lines = File.ReadAllLines(path);
-            if (lines.Length == 0)
-                return result;
-
-            // first line is header
             for (int i = 1; i < lines.Length; i++)
             {
                 var line = lines[i];
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
 
-                var parts = SplitCsvLine(line);
-
-                // Minimum we expect: 14 columns (no LAST USER in older files)
-                if (parts.Length < 14)
+                var cols = SplitCsvLine(line);
+                if (cols.Length < 14)
                     continue;
-
-                string GetPart(int index) =>
-                    index < parts.Length ? parts[index] : string.Empty;
 
                 var row = new WorkRow
                 {
-                    Retail = GetPart(0),
-                    OE = GetPart(1),
-                    Customer = GetPart(2),
-                    Serial = GetPart(3),
-                    DayDue = GetPart(4),
-                    DateDue = ParseNullableDate(GetPart(5)),
-                    Status = GetPart(6),
-                    Qty = ParseInt(GetPart(7)),
-                    WhatIsIt = GetPart(8),
-                    PO = GetPart(9),
-                    WhatAreWeDoing = GetPart(10),
-                    Parts = GetPart(11),
-                    Shaft = GetPart(12),
-                    Priority = GetPart(13),
-                    // LAST USER is optional (column 14). If missing, it will be ""
-                    LastUser = parts.Length > 14 ? GetPart(14) : string.Empty
+                    Retail = GetCol(cols, 0),
+                    OE = GetCol(cols, 1),
+                    Customer = GetCol(cols, 2),
+                    Serial = GetCol(cols, 3),
+                    DayDue = GetCol(cols, 4),
+                    Status = GetCol(cols, 6),
+                    Qty = GetCol(cols, 7),
+                    WhatIsIt = GetCol(cols, 8),
+                    PO = GetCol(cols, 9),
+                    WhatAreWeDoing = GetCol(cols, 10),
+                    Parts = GetCol(cols, 11),
+                    Shaft = GetCol(cols, 12),
+                    Priority = GetCol(cols, 13),
+                    LastUser = cols.Length > 14 ? GetCol(cols, 14) : string.Empty,
+                    IsGroupRow = false
                 };
 
-                // Auto-fill DAY DUE from DATE DUE if missing
-                if (string.IsNullOrWhiteSpace(row.DayDue) && row.DateDue.HasValue)
+                var rawDate = GetCol(cols, 5);
+                if (!string.IsNullOrWhiteSpace(rawDate))
                 {
-                    row.DayDue = DayOfWeekToShortName(row.DateDue.Value);
+                    if (DateTime.TryParseExact(rawDate, "dd/MM/yyyy",
+                            CultureInfo.InvariantCulture, DateTimeStyles.None, out var dd)
+                        || DateTime.TryParse(rawDate, out dd))
+                    {
+                        row.DateDue = dd;
+                        if (string.IsNullOrWhiteSpace(row.DayDue))
+                            row.DayDue = dd.ToString("ddd", CultureInfo.InvariantCulture);
+                    }
                 }
 
-                result.Add(row);
+                items.Add(row);
+            }
+
+            // Auto-sort:
+            //   - All "paint shop" rows first
+            //   - Then others sorted by DATE DUE
+            var paintShop = items
+                .Where(r => EqualsIgnoreCase(r.Status, "paint shop"))
+                .ToList();
+
+            var others = items
+                .Where(r => !EqualsIgnoreCase(r.Status, "paint shop"))
+                .OrderBy(r => r.DateDue ?? DateTime.MaxValue)
+                .ToList();
+
+            return paintShop.Concat(others).ToList();
+        }
+
+        private string[] ReadAllLinesShared(string path)
+        {
+            var lines = new List<string>();
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs);
+            string? line;
+            while ((line = sr.ReadLine()) != null)
+            {
+                lines.Add(line);
+            }
+            return lines.ToArray();
+        }
+
+        private string[] SplitCsvLine(string line)
+        {
+            var result = new List<string>();
+            bool inQuotes = false;
+            string current = "";
+
+            foreach (var c in line)
+            {
+                if (c == '"')
+                {
+                    inQuotes = !inQuotes;
+                    continue;
+                }
+
+                if (c == ',' && !inQuotes)
+                {
+                    result.Add(current);
+                    current = "";
+                }
+                else
+                {
+                    current += c;
+                }
+            }
+
+            result.Add(current);
+            return result.ToArray();
+        }
+
+        private string GetCol(string[] cols, int index) =>
+            index < cols.Length ? cols[index].Trim() : string.Empty;
+
+        private List<WorkRow> InsertDayDividers(List<WorkRow> source)
+        {
+            var items = source
+                .Where(r => !r.IsGroupRow)
+                .OrderBy(r => r.DateDue ?? DateTime.MaxValue)
+                .ToList();
+
+            var result = new List<WorkRow>();
+            string? currentKey = null;
+
+            foreach (var item in items)
+            {
+                string key;
+                string caption;
+
+                if (item.DateDue.HasValue)
+                {
+                    key = item.DateDue.Value.ToString("yyyy-MM-dd");
+                    caption = item.DateDue.Value.ToString("dd/MM/yyyy");
+                }
+                else
+                {
+                    key = "NO_DATE";
+                    caption = "No Date";
+                }
+
+                if (currentKey != key)
+                {
+                    currentKey = key;
+                    result.Add(new WorkRow
+                    {
+                        IsGroupRow = true,
+                        Customer = caption,
+                        DateDue = item.DateDue
+                    });
+                }
+
+                result.Add(item);
             }
 
             return result;
         }
 
-        private static void SaveToCsv(string path, IEnumerable<WorkRow> rows)
+        private void SaveCsv(string path, IEnumerable<WorkRow> rows)
         {
-            var list = rows.ToList();
+            var realRows = rows.Where(r => !r.IsGroupRow).ToList();
 
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+            using var sw = new StreamWriter(fs);
 
-            using var writer = new StreamWriter(path, false);
+            sw.WriteLine("RETAIL,OE,CUSTOMER,SERIAL,DAY DUE,DATE DUE,STATUS,QTY,WHAT IS IT,PO,WHAT ARE WE DOING,PARTS,SHAFT,PRIORITY,LAST USER");
 
-            writer.WriteLine("RETAIL,OE,CUSTOMER,SERIAL,DAY DUE,DATE DUE,STATUS,QTY,WHAT IS IT,PO,WHAT ARE WE DOING,PARTS,SHAFT,PRIORITY,LAST USER");
-
-            foreach (var r in list)
+            foreach (var r in realRows)
             {
-                if (r.IsGroupRow)
-                    continue;
+                var dateStr = r.DateDue.HasValue
+                    ? r.DateDue.Value.ToString("dd/MM/yyyy")
+                    : "";
 
-                var fields = new[]
-                {
-                    EscapeCsv(r.Retail),
-                    EscapeCsv(r.OE),
-                    EscapeCsv(r.Customer),
-                    EscapeCsv(r.Serial),
-                    EscapeCsv(r.DayDue),
-                    r.DateDue?.ToString("dd/MM/yyyy", CultureInfo.InvariantCulture) ?? "",
-                    EscapeCsv(r.Status),
-                    r.Qty.ToString(CultureInfo.InvariantCulture),
-                    EscapeCsv(r.WhatIsIt),
-                    EscapeCsv(r.PO),
-                    EscapeCsv(r.WhatAreWeDoing),
-                    EscapeCsv(r.Parts),
-                    EscapeCsv(r.Shaft),
-                    EscapeCsv(r.Priority),
-                    EscapeCsv(r.LastUser)
-                };
-
-                writer.WriteLine(string.Join(",", fields));
+                sw.WriteLine(string.Join(",",
+                    Escape(r.Retail),
+                    Escape(r.OE),
+                    Escape(r.Customer),
+                    Escape(r.Serial),
+                    Escape(r.DayDue),
+                    Escape(dateStr),
+                    Escape(r.Status),
+                    Escape(r.Qty),
+                    Escape(r.WhatIsIt),
+                    Escape(r.PO),
+                    Escape(r.WhatAreWeDoing),
+                    Escape(r.Parts),
+                    Escape(r.Shaft),
+                    Escape(r.Priority),
+                    Escape(r.LastUser)));
             }
         }
 
-        private static int ParseInt(string s)
+        private string Escape(string value)
         {
-            if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value))
-                return value;
-            return 0;
+            if (value == null)
+                return "";
+            if (value.Contains(",") || value.Contains("\""))
+                return "\"" + value.Replace("\"", "\"\"") + "\"";
+            return value;
         }
 
-        private static DateTime? ParseNullableDate(string s)
-        {
-            if (DateTime.TryParseExact(
-                    s,
-                    DateFormats,
-                    CultureInfo.InvariantCulture,
-                    DateTimeStyles.None,
-                    out var dt))
-            {
-                return dt.Date;
-            }
-            return null;
-        }
-
-        private static string DayOfWeekToShortName(DateTime date)
-        {
-            switch (date.DayOfWeek)
-            {
-                case DayOfWeek.Monday: return "Mon";
-                case DayOfWeek.Tuesday: return "Tues";
-                case DayOfWeek.Wednesday: return "Wed";
-                case DayOfWeek.Thursday: return "Thur";
-                case DayOfWeek.Friday: return "Fri";
-                default: return string.Empty; // weekend
-            }
-        }
-
-        private static string EscapeCsv(string? s)
-        {
-            s ??= "";
-            if (s.Contains(",") || s.Contains("\""))
-            {
-                s = s.Replace("\"", "\"\"");
-                return $"\"{s}\"";
-            }
-            return s;
-        }
-
-        #endregion
-
-        #region File watcher
-
-        private void InitFileWatcher()
+        private void SaveAll()
         {
             try
             {
-                if (!Directory.Exists(BaseFolder))
-                    return;
+                _suppressWatcher = true;
 
-                _watcher = new FileSystemWatcher(BaseFolder, "*.csv");
-                _watcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size;
-                _watcher.Changed += Watcher_OnChanged;
-                _watcher.Created += Watcher_OnChanged;
-                _watcher.Renamed += Watcher_OnChanged;
-                _watcher.EnableRaisingEvents = true;
-            }
-            catch
-            {
-                // If watcher fails (e.g. permissions), just run without live reload
-            }
-        }
+                string openPath = Path.Combine(BaseFolder, $"{_branch}open.csv");
+                string closedPath = Path.Combine(BaseFolder, $"{_branch}closed.csv");
 
-        private void Watcher_OnChanged(object sender, FileSystemEventArgs e)
-        {
-            string openPath = GetOpenPath();
-            string closedPath = GetClosedPath();
+                SaveCsv(openPath, _openRows);
+                SaveCsv(closedPath, _closedRows);
 
-            if (!string.Equals(e.FullPath, openPath, StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(e.FullPath, closedPath, StringComparison.OrdinalIgnoreCase))
-                return;
-
-            if (_isReloading)
-                return;
-
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
+                // Record our own write times so our watcher ignores this save
                 try
                 {
-                    _isReloading = true;
-                    ReloadFromDisk();
-                    StatusTextBlock.Text = $"Auto-reloaded at {DateTime.Now:T}";
+                    _fileWriteTimes[openPath] = File.GetLastWriteTimeUtc(openPath);
                 }
-                catch (Exception ex)
+                catch { }
+                try
                 {
-                    StatusTextBlock.Text = $"Auto-reload error: {ex.Message}";
+                    _fileWriteTimes[closedPath] = File.GetLastWriteTimeUtc(closedPath);
                 }
-                finally
-                {
-                    _isReloading = false;
-                }
-            }), DispatcherPriority.Background);
-        }
+                catch { }
 
-        #endregion
-
-        #region Lifecycle & status rules
-
-        private void ReloadFromDisk()
-        {
-            _suppressDateEvents = true;
-            try
-            {
-                LoadAll();
-
-                OpenGrid.ItemsSource = _openRows;
-                ClosedGrid.ItemsSource = _closedRows;
-
-                _openView = CollectionViewSource.GetDefaultView(OpenGrid.ItemsSource);
-                _closedView = CollectionViewSource.GetDefaultView(ClosedGrid.ItemsSource);
-
-                if (_openView != null)
-                    _openView.Filter = OpenFilter;
-
-                if (_closedView != null)
-                    _closedView.Filter = ClosedFilter;
-
-                MoveExistingClosedStatusesToClosed();
-                RebuildOpenWithDividers();
-                RefreshViews();
-            }
-            finally
-            {
-                _suppressDateEvents = false;
-            }
-        }
-
-        private static bool IsClosedStatus(string? status)
-        {
-            if (string.IsNullOrWhiteSpace(status)) return false;
-            status = status.Trim().ToLowerInvariant();
-            return status == "picked up" || status == "cancelled";
-        }
-
-        private static bool IsPaintShopStatus(string? status)
-        {
-            if (string.IsNullOrWhiteSpace(status)) return false;
-            status = status.Trim().ToLowerInvariant();
-            return status == "paint shop";
-        }
-
-        private void WorkGrid_CellEditEnding(object? sender, DataGridCellEditEndingEventArgs e)
-        {
-            if (e.EditAction != DataGridEditAction.Commit)
-                return;
-
-            if (sender is not DataGrid grid)
-                return;
-
-            if (e.Row?.Item is not WorkRow rowItem)
-                return;
-
-            if (rowItem.IsGroupRow)
-                return;
-
-            bool isStatusColumn =
-                e.Column?.Header != null &&
-                string.Equals(e.Column.Header.ToString(), "STATUS", StringComparison.OrdinalIgnoreCase);
-
-            string? newStatus = null;
-
-            if (isStatusColumn)
-            {
-                if (e.EditingElement is ComboBox cb)
-                    newStatus = cb.Text;
-                else if (e.EditingElement is TextBox tb)
-                    newStatus = tb.Text;
-
-                if (string.IsNullOrWhiteSpace(newStatus))
-                    newStatus = null;
-                else
-                    newStatus = newStatus.Trim();
-            }
-
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                if (isStatusColumn && newStatus != null)
-                {
-                    ApplyStatusRules(grid, rowItem, newStatus);
-                }
-                else
-                {
-                    if (grid == OpenGrid)
-                        RebuildOpenWithDividers();
-                }
-
-                rowItem.LastUser = _currentUser;
-
-                SaveAll();
-                RefreshViews();
-            }), DispatcherPriority.Background);
-        }
-
-        /// <summary>
-        /// Fired by DatePicker in both grids.
-        /// Keeps DateDue, DayDue, grouping & sorting in sync.
-        /// </summary>
-        private void DateDuePicker_SelectedDateChanged(object? sender, SelectionChangedEventArgs e)
-        {
-            if (_suppressDateEvents)
-                return;
-
-            if (sender is not DatePicker dp)
-                return;
-
-            if (dp.DataContext is not WorkRow row || row.IsGroupRow)
-                return;
-
-            if (dp.SelectedDate is DateTime date)
-            {
-                row.DateDue = date.Date;
-                row.DayDue = DayOfWeekToShortName(date.Date);
-            }
-            else
-            {
-                row.DateDue = null;
-                row.DayDue = string.Empty;
-            }
-
-            row.LastUser = _currentUser;
-
-            if (_openRows.Contains(row))
-                RebuildOpenWithDividers();
-
-            SaveAll();
-            RefreshViews();
-        }
-
-        private void ApplyStatusRules(DataGrid editingGrid, WorkRow rowItem, string newStatus)
-        {
-            rowItem.Status = newStatus;
-
-            // picked up / cancelled -> Closed
-            if (IsClosedStatus(newStatus))
-            {
-                MoveRowBetweenCollections(_openRows, _closedRows, rowItem);
-            }
-
-            RebuildOpenWithDividers();
-        }
-
-        private void MoveExistingClosedStatusesToClosed()
-        {
-            var toMove = _openRows
-                .Where(r => !r.IsGroupRow && IsClosedStatus(r.Status))
-                .ToList();
-
-            foreach (var r in toMove)
-            {
-                _openRows.Remove(r);
-                _closedRows.Add(r);
-            }
-        }
-
-        private void MoveRowBetweenCollections(ObservableCollection<WorkRow> from,
-                                               ObservableCollection<WorkRow> to,
-                                               WorkRow row)
-        {
-            if (from.Contains(row))
-            {
-                from.Remove(row);
-                to.Add(row);
-            }
-        }
-
-        /// <summary>
-        /// Rebuilds Open Works:
-        ///  • paint shop rows first (sorted by DateDue)
-        ///  • then all other rows sorted by DateDue
-        ///  • inserts one uneditable group row per date.
-        /// </summary>
-        private void RebuildOpenWithDividers()
-        {
-            _suppressDateEvents = true;
-            try
-            {
-                var baseRows = _openRows.Where(r => !r.IsGroupRow).ToList();
-
-                var paintRows = baseRows
-                    .Where(r => IsPaintShopStatus(r.Status))
-                    .OrderBy(r => r.DateDue ?? DateTime.MaxValue)
-                    .ToList();
-
-                var otherRows = baseRows
-                    .Where(r => !IsPaintShopStatus(r.Status))
-                    .OrderBy(r => r.DateDue ?? DateTime.MaxValue)
-                    .ToList();
-
-                var ordered = new List<WorkRow>();
-                ordered.AddRange(paintRows);
-                ordered.AddRange(otherRows);
-
-                _openRows.Clear();
-
-                DateTime? currentDate = null;
-                bool first = true;
-
-                foreach (var row in ordered)
-                {
-                    var date = row.DateDue?.Date;
-
-                    if (date.HasValue && (first || currentDate == null || date.Value != currentDate.Value))
-                    {
-                        currentDate = date.Value;
-                        first = false;
-
-                        _openRows.Add(new WorkRow
-                        {
-                            IsGroupRow = true,
-                            Customer = currentDate.Value.ToString("dd/MM/yyyy"),
-                            DateDue = currentDate.Value
-                        });
-                    }
-
-                    _openRows.Add(row);
-                }
-            }
-            finally
-            {
-                _suppressDateEvents = false;
-            }
-        }
-
-        #endregion
-
-        #region Toolbar handlers
-
-        private void Reload_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                ReloadFromDisk();
-                StatusTextBlock.Text = "Reloaded";
+                StatusTextBlock.Text = $"Autosaved at {DateTime.Now:T}";
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.ToString(), "Reload error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Error saving CSV:\n{ex.Message}",
+                    "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                _suppressWatcher = false;
             }
         }
 
-        private void Save_Click(object sender, RoutedEventArgs e)
-        {
-            SaveAll();
-        }
+        // ---------- BUTTON HANDLERS ----------
+
+        private void Reload_Click(object sender, RoutedEventArgs e) => LoadData();
+
+        private void Save_Click(object sender, RoutedEventArgs e) => SaveAll();
 
         private void DeleteRow_Click(object sender, RoutedEventArgs e)
         {
             var grid = WorksTabControl.SelectedIndex == 0 ? OpenGrid : ClosedGrid;
-            if (grid.SelectedItem is WorkRow row && !row.IsGroupRow)
-            {
-                var collection = grid == OpenGrid ? _openRows : _closedRows;
-                collection.Remove(row);
-
-                if (grid == OpenGrid)
-                    RebuildOpenWithDividers();
-
-                SaveAll();
-                RefreshViews();
-            }
-        }
-
-        private void FontSizeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (!IsLoaded)
+            if (grid.SelectedItem is not WorkRow row || row.IsGroupRow)
                 return;
 
-            if (FontSizeComboBox.SelectedItem is ComboBoxItem item &&
-                item.Tag is string tag &&
-                double.TryParse(tag, out double size))
-            {
-                if (OpenGrid != null)
-                    OpenGrid.FontSize = size;
+            var collection = grid == OpenGrid ? _openRows : _closedRows;
+            collection.Remove(row);
 
-                if (ClosedGrid != null)
-                    ClosedGrid.FontSize = size;
-            }
+            // Don't touch LastUser here – row is being deleted.
+            SaveAll();
         }
 
-        #endregion
-
-        #region Search filtering
-
-        private bool OpenFilter(object obj)
-        {
-            if (obj is not WorkRow row) return false;
-            return FilterRow(row);
-        }
-
-        private bool ClosedFilter(object obj)
-        {
-            if (obj is not WorkRow row) return false;
-            return FilterRow(row);
-        }
-
-        private bool FilterRow(WorkRow row)
-        {
-            if (row.IsGroupRow)
-                return true;
-
-            var text = SearchTextBox.Text;
-            if (string.IsNullOrWhiteSpace(text))
-                return true;
-
-            text = text.Trim().ToLowerInvariant();
-
-            bool Match(string? s) =>
-                !string.IsNullOrEmpty(s) &&
-                s.ToLowerInvariant().Contains(text);
-
-            return Match(row.Retail) ||
-                   Match(row.OE) ||
-                   Match(row.Customer) ||
-                   Match(row.Serial) ||
-                   Match(row.DayDue) ||
-                   (row.DateDue?.ToString("dd/MM/yyyy")?.ToLowerInvariant().Contains(text) ?? false) ||
-                   Match(row.Status) ||
-                   row.Qty.ToString(CultureInfo.InvariantCulture).Contains(text) ||
-                   Match(row.WhatIsIt) ||
-                   Match(row.PO) ||
-                   Match(row.WhatAreWeDoing) ||
-                   Match(row.Parts) ||
-                   Match(row.Shaft) ||
-                   Match(row.Priority) ||
-                   Match(row.LastUser);
-        }
+        // ---------- SEARCH ----------
 
         private void SearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
-            RefreshViews();
-        }
+            var text = SearchTextBox.Text?.Trim() ?? string.Empty;
 
-        private void RefreshViews()
-        {
-            _openView?.Refresh();
-            _closedView?.Refresh();
-        }
+            LoadData(); // reset to full list first
 
-        #endregion
-
-        #region Drag & drop reordering
-
-        private void DataGrid_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-        {
-            _dragStartPoint = e.GetPosition(null);
-            _dragSourceGrid = sender as DataGrid;
-            _draggedRow = null;
-
-            if (_dragSourceGrid == null)
+            if (string.IsNullOrEmpty(text))
                 return;
 
-            var row = GetRowUnderMouse(_dragSourceGrid, e.GetPosition(_dragSourceGrid));
-            _draggedRow = row;
+            bool Matches(WorkRow r) =>
+                (!string.IsNullOrEmpty(r.Customer) &&
+                 r.Customer.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0) ||
+                (!string.IsNullOrEmpty(r.Serial) &&
+                 r.Serial.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0) ||
+                (!string.IsNullOrEmpty(r.WhatIsIt) &&
+                 r.WhatIsIt.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0) ||
+                (!string.IsNullOrEmpty(r.PO) &&
+                 r.PO.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0) ||
+                (!string.IsNullOrEmpty(r.WhatAreWeDoing) &&
+                 r.WhatAreWeDoing.IndexOf(text, StringComparison.OrdinalIgnoreCase) >= 0);
+
+            var openCore = _openRows.Where(r => !r.IsGroupRow && Matches(r)).ToList();
+            var closedCore = _closedRows.Where(r => !r.IsGroupRow && Matches(r)).ToList();
+
+            _openRows = new ObservableCollection<WorkRow>(InsertDayDividers(openCore));
+            _closedRows = new ObservableCollection<WorkRow>(InsertDayDividers(closedCore));
+
+            OpenGrid.ItemsSource = _openRows;
+            ClosedGrid.ItemsSource = _closedRows;
         }
 
-        private void DataGrid_PreviewMouseMove(object sender, MouseEventArgs e)
+        // ---------- FONT SIZE ----------
+
+        private void FontSizeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (OpenGrid == null || ClosedGrid == null)
+                return;
+
+            if (FontSizeComboBox.SelectedItem is not ComboBoxItem item)
+                return;
+
+            if (!int.TryParse(item.Tag?.ToString(), out var size))
+                return;
+
+            OpenGrid.FontSize = size;
+            ClosedGrid.FontSize = size;
+        }
+
+        // ---------- DATE PICKER (auto DayDue + autosave) ----------
+
+        private void DateDuePicker_SelectedDateChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (sender is not DatePicker dp) return;
+            if (dp.DataContext is not WorkRow row) return;
+            if (row.IsGroupRow) return;
+
+            if (row.DateDue.HasValue)
+            {
+                row.DayDue = row.DateDue.Value.ToString("ddd", CultureInfo.InvariantCulture);
+            }
+
+            // This specific row has changed
+            row.LastUser = _username;
+            SaveAll();
+        }
+
+        // ---------- ROW EDIT AUTOSAVE & EDIT TRACKING ----------
+
+        private void DataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
+        {
+            if (e.Row?.Item is WorkRow row && !row.IsGroupRow)
+            {
+                _isEditingRow = true;
+            }
+        }
+
+        private void DataGrid_RowEditEnding(object sender, DataGridRowEditEndingEventArgs e)
+        {
+            if (e.EditAction != DataGridEditAction.Commit)
+            {
+                _isEditingRow = false;
+                return;
+            }
+
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (e.Row.Item is WorkRow row && !row.IsGroupRow)
+                {
+                    // Only this row gets its LastUser updated
+                    row.LastUser = _username;
+                    SaveAll();
+                }
+
+                _isEditingRow = false;
+
+                // If a file change happened while editing, reload now
+                if (_pendingReload)
+                {
+                    _pendingReload = false;
+                    StatusTextBlock.Text = "External changes detected, reloading…";
+                    LoadData();
+                }
+            }), DispatcherPriority.Background);
+        }
+
+        // ---------- CONTEXT MENU ROW OPS ----------
+
+        private void AddRowAbove_Click(object sender, RoutedEventArgs e)
+        {
+            var grid = WorksTabControl.SelectedIndex == 0 ? OpenGrid : ClosedGrid;
+            if (grid.SelectedItem is not WorkRow row)
+                return;
+
+            var collection = grid == OpenGrid ? _openRows : _closedRows;
+            int index = collection.IndexOf(row);
+            if (index < 0) return;
+
+            var newRow = CreateBlankRow();
+            // creator is the first user to touch it
+            newRow.LastUser = _username;
+
+            collection.Insert(index, newRow);
+            SaveAll();
+        }
+
+        private void AddRowBelow_Click(object sender, RoutedEventArgs e)
+        {
+            var grid = WorksTabControl.SelectedIndex == 0 ? OpenGrid : ClosedGrid;
+            if (grid.SelectedItem is not WorkRow row)
+                return;
+
+            var collection = grid == OpenGrid ? _openRows : _closedRows;
+            int index = collection.IndexOf(row);
+            if (index < 0) return;
+
+            var newRow = CreateBlankRow();
+            newRow.LastUser = _username;
+
+            collection.Insert(index + 1, newRow);
+            SaveAll();
+        }
+
+        private void CopyRow_Click(object sender, RoutedEventArgs e)
+        {
+            var grid = WorksTabControl.SelectedIndex == 0 ? OpenGrid : ClosedGrid;
+            if (grid.SelectedItem is not WorkRow row || row.IsGroupRow)
+                return;
+
+            var collection = grid == OpenGrid ? _openRows : _closedRows;
+            int index = collection.IndexOf(row);
+            if (index < 0) return;
+
+            var copy = new WorkRow
+            {
+                Retail = row.Retail,
+                OE = row.OE,
+                Customer = row.Customer,
+                Serial = row.Serial,
+                DayDue = row.DayDue,
+                DateDue = row.DateDue,
+                Status = row.Status,
+                Qty = row.Qty,
+                WhatIsIt = row.WhatIsIt,
+                PO = row.PO,
+                WhatAreWeDoing = row.WhatAreWeDoing,
+                Parts = row.Parts,
+                Shaft = row.Shaft,
+                Priority = row.Priority,
+                // The user doing the copy is the last user for this new row
+                LastUser = _username,
+                IsGroupRow = false
+            };
+
+            collection.Insert(index + 1, copy);
+            SaveAll();
+        }
+
+        private WorkRow CreateBlankRow()
+        {
+            var today = DateTime.Today;
+            return new WorkRow
+            {
+                DateDue = today,
+                DayDue = today.ToString("ddd", CultureInfo.InvariantCulture),
+                IsGroupRow = false
+                // LastUser is set by caller
+            };
+        }
+
+        // ---------- DRAG & DROP WITH LEFT HANDLE ONLY ----------
+
+        private void DragHandle_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            _dragStart = e.GetPosition(null);
+            _draggedRow = null;
+            _dragSourceGrid = null;
+
+            if (sender is FrameworkElement fe)
+            {
+                _draggedRow = fe.DataContext as WorkRow;
+                _dragSourceGrid = FindVisualParent<DataGrid>(fe);
+            }
+        }
+
+        private void DragHandle_PreviewMouseMove(object sender, MouseEventArgs e)
         {
             if (e.LeftButton != MouseButtonState.Pressed)
                 return;
 
-            if (_dragSourceGrid == null || _draggedRow == null)
+            if (_draggedRow == null || _draggedRow.IsGroupRow || _dragSourceGrid == null)
                 return;
 
-            var position = e.GetPosition(null);
-            if (Math.Abs(position.X - _dragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance &&
-                Math.Abs(position.Y - _dragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance)
-                return;
-
-            if (_draggedRow.IsGroupRow)
+            var pos = e.GetPosition(null);
+            if (Math.Abs(pos.X - _dragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
+                Math.Abs(pos.Y - _dragStart.Y) < SystemParameters.MinimumVerticalDragDistance)
                 return;
 
             DragDrop.DoDragDrop(_dragSourceGrid, _draggedRow, DragDropEffects.Move);
         }
 
+        private void DragHandle_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            _draggedRow = null;
+            _dragSourceGrid = null;
+        }
+
         private void DataGrid_Drop(object sender, DragEventArgs e)
         {
-            if (_draggedRow == null)
+            if (_draggedRow == null || _draggedRow.IsGroupRow)
                 return;
 
-            var targetGrid = sender as DataGrid;
-            if (targetGrid == null || targetGrid != _dragSourceGrid)
+            if (sender is not DataGrid targetGrid)
                 return;
 
-            var point = e.GetPosition(targetGrid);
-            var targetRow = GetRowUnderMouse(targetGrid, point);
+            var sourceCollection = _dragSourceGrid == OpenGrid ? _openRows : _closedRows;
+            var targetCollection = targetGrid == OpenGrid ? _openRows : _closedRows;
 
-            var collection = targetGrid == OpenGrid ? _openRows : _closedRows;
-            var oldIndex = collection.IndexOf(_draggedRow);
-
-            if (oldIndex < 0)
-                return;
-
-            int newIndex;
-
-            if (targetRow == null)
+            var targetRowContainer = FindVisualParent<DataGridRow>((DependencyObject)e.OriginalSource);
+            if (targetRowContainer == null ||
+                targetRowContainer.Item is not WorkRow targetRow ||
+                targetRow.IsGroupRow)
             {
-                newIndex = collection.Count - 1;
+                _draggedRow = null;
+                _dragSourceGrid = null;
+                return;
+            }
+
+            int oldIndex = sourceCollection.IndexOf(_draggedRow);
+            if (oldIndex < 0)
+            {
+                _draggedRow = null;
+                _dragSourceGrid = null;
+                return;
+            }
+
+            if (sourceCollection == targetCollection)
+            {
+                int newIndex = targetCollection.IndexOf(targetRow);
+                if (newIndex >= 0 && oldIndex != newIndex)
+                {
+                    targetCollection.Move(oldIndex, newIndex);
+                }
             }
             else
             {
-                newIndex = collection.IndexOf(targetRow);
-                if (newIndex < 0)
-                    newIndex = collection.Count - 1;
+                sourceCollection.Remove(_draggedRow);
+                int newIndex = targetCollection.IndexOf(targetRow);
+                if (newIndex < 0) newIndex = targetCollection.Count;
+                targetCollection.Insert(newIndex, _draggedRow);
             }
 
-            if (newIndex == oldIndex)
-                return;
-
-            collection.RemoveAt(oldIndex);
-            collection.Insert(newIndex, _draggedRow);
-
-            if (targetGrid == OpenGrid)
-                RebuildOpenWithDividers();
-
-            _draggedRow.LastUser = _currentUser;
-
             SaveAll();
-            RefreshViews();
+
+            _draggedRow = null;
+            _dragSourceGrid = null;
         }
 
-        private static WorkRow? GetRowUnderMouse(DataGrid grid, Point position)
+        private static T? FindVisualParent<T>(DependencyObject? child) where T : DependencyObject
         {
-            var element = grid.InputHitTest(position) as DependencyObject;
-            while (element != null && element is not DataGridRow)
+            while (child != null)
             {
-                element = VisualTreeHelper.GetParent(element);
+                if (child is T parent)
+                    return parent;
+
+                child = VisualTreeHelper.GetParent(child);
             }
-
-            return (element as DataGridRow)?.Item as WorkRow;
+            return null;
         }
-
-        #endregion
-
-        #region Context menu
-
-        private void AddRowAbove_Click(object sender, RoutedEventArgs e)
-        {
-            var (grid, row) = GetContextMenuTarget(sender);
-            if (grid == null || row == null || row.IsGroupRow)
-                return;
-
-            var collection = grid == OpenGrid ? _openRows : _closedRows;
-            var index = collection.IndexOf(row);
-            if (index < 0) index = 0;
-
-            collection.Insert(index, new WorkRow { LastUser = _currentUser });
-
-            if (grid == OpenGrid)
-                RebuildOpenWithDividers();
-
-            SaveAll();
-            RefreshViews();
-        }
-
-        private void AddRowBelow_Click(object sender, RoutedEventArgs e)
-        {
-            var (grid, row) = GetContextMenuTarget(sender);
-            if (grid == null || row == null || row.IsGroupRow)
-                return;
-
-            var collection = grid == OpenGrid ? _openRows : _closedRows;
-            var index = collection.IndexOf(row);
-            if (index < 0) index = collection.Count - 1;
-
-            collection.Insert(index + 1, new WorkRow { LastUser = _currentUser });
-
-            if (grid == OpenGrid)
-                RebuildOpenWithDividers();
-
-            SaveAll();
-            RefreshViews();
-        }
-
-        private void CopyRow_Click(object sender, RoutedEventArgs e)
-        {
-            var (grid, row) = GetContextMenuTarget(sender);
-            if (grid == null || row == null || row.IsGroupRow)
-                return;
-
-            var collection = grid == OpenGrid ? _openRows : _closedRows;
-            var index = collection.IndexOf(row);
-            if (index < 0) index = collection.Count - 1;
-
-            var copy = row.Clone();
-            copy.LastUser = _currentUser;
-            collection.Insert(index + 1, copy);
-
-            if (grid == OpenGrid)
-                RebuildOpenWithDividers();
-
-            SaveAll();
-            RefreshViews();
-        }
-
-        private (DataGrid? grid, WorkRow? row) GetContextMenuTarget(object sender)
-        {
-            if (sender is not MenuItem menuItem)
-                return (null, null);
-
-            if (menuItem.Parent is not ContextMenu ctx)
-                return (null, null);
-
-            var grid = ctx.PlacementTarget as DataGrid;
-            var row = grid?.SelectedItem as WorkRow;
-            return (grid, row);
-        }
-
-        #endregion
     }
 }

@@ -1,51 +1,152 @@
-﻿using System.Windows;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Windows;
 using System.Windows.Controls;
-using WorkshopTracker.Services;
-using WorkshopTracker.ViewModels;
+using WorkshopTracker.Views;
 
 namespace WorkshopTracker.Views
 {
     public partial class LoginWindow : Window
     {
-        private readonly ConfigServices _config;
-        private readonly UserService _userService;
-        private readonly LoginViewModel _viewModel;
+        private const string UsersCsvPath = @"S:\Public\DesignData\users.csv";
+
+        private class UserRecord
+        {
+            public string Username { get; set; } = string.Empty;
+            public string Password { get; set; } = string.Empty;
+            public string Branch { get; set; } = string.Empty;
+        }
+
+        private List<UserRecord> _users = new();
 
         public LoginWindow()
         {
             InitializeComponent();
-
-            _config = new ConfigServices();
-            _userService = new UserService(_config);
-            _viewModel = new LoginViewModel(_userService);
-
-            DataContext = _viewModel;
+            Loaded += LoginWindow_Loaded;
         }
 
-        private void PasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
+        private void LoginWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            if (DataContext is LoginViewModel vm && sender is PasswordBox pb)
+            LoadUsers();
+        }
+
+        private void LoadUsers()
+        {
+            _users.Clear();
+
+            if (!File.Exists(UsersCsvPath))
             {
-                vm.Password = pb.Password;
+                MessageBox.Show(
+                    $"users.csv not found at:\n{UsersCsvPath}",
+                    "Login Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                return;
             }
+
+            var lines = File.ReadAllLines(UsersCsvPath);
+            if (lines.Length <= 1)
+                return; // header only
+
+            // header: username,password,branch
+            for (int i = 1; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                var cols = line.Split(',');
+                if (cols.Length < 3)
+                    continue;
+
+                _users.Add(new UserRecord
+                {
+                    Username = cols[0].Trim(),
+                    Password = cols[1].Trim(),
+                    Branch = cols[2].Trim()
+                });
+            }
+
+            var branches = _users
+                .Select(u => u.Branch)
+                .Where(b => !string.IsNullOrWhiteSpace(b))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(b => b)
+                .ToList();
+
+            BranchComboBox.ItemsSource = branches;
         }
 
         private void LoginButton_Click(object sender, RoutedEventArgs e)
         {
-            if (DataContext is not LoginViewModel vm)
-                return;
+            var username = UsernameTextBox.Text.Trim();
+            var password = PasswordBox.Password.Trim();
+            var selectedBranch = BranchComboBox.SelectedItem as string;
 
-            if (vm.TryLogin(out var branch, out var username, out var error))
+            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
             {
-                var main = new MainWindow(branch, username, _config);
+                MessageBox.Show("Please enter username and password.",
+                    "Login", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Root user: can choose any branch
+            if (string.Equals(username, "root", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(password, "root", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrEmpty(selectedBranch))
+                {
+                    MessageBox.Show("Please select a branch for root login.",
+                        "Login", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                OpenMainWindow("root", selectedBranch);
+                return;
+            }
+
+            // Normal user must be found in users.csv
+            var user = _users.FirstOrDefault(u =>
+                string.Equals(u.Username, username, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(u.Password, password, StringComparison.Ordinal));
+
+            if (user == null)
+            {
+                MessageBox.Show("Invalid username or password.",
+                    "Login", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(user.Branch))
+            {
+                MessageBox.Show("Your account does not have a branch assigned.",
+                    "Login", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            OpenMainWindow(user.Username, user.Branch);
+        }
+
+        private void OpenMainWindow(string username, string branch)
+        {
+            try
+            {
+                var main = new MainWindow(username, branch);
                 main.Show();
                 Close();
             }
-            else if (!string.IsNullOrWhiteSpace(error))
+            catch (Exception ex)
             {
-                MessageBox.Show(error, "Login failed",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show($"Error opening main window:\n{ex.Message}",
+                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        private void Close_Click(object sender, RoutedEventArgs e)
+        {
+            Close();
         }
     }
 }

@@ -12,23 +12,19 @@
         WindowStartupLocation="CenterScreen">
 
     <Window.Resources>
-        <!-- Date colour converter for DATE DUE column -->
+        <!-- Date colouring -->
         <conv:DateDueToBrushConverter x:Key="DateDueToBrushConverter" />
 
-        <!-- Group row style (date divider rows) -->
-        <Style x:Key="GroupRowStyle" TargetType="DataGridRow">
-            <Setter Property="Background" Value="#FFEFEFEF" />
-            <Setter Property="FontWeight" Value="Bold" />
-            <Setter Property="IsHitTestVisible" Value="False" />
-        </Style>
-
-        <!-- Default row style; group rows overridden by DataTrigger -->
+        <!-- Row style: normal rows white; date-divider rows light grey & non-editable -->
         <Style TargetType="DataGridRow">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="FontWeight" Value="Normal" />
             <Setter Property="FontSize" Value="12" />
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsGroupRow}" Value="True">
-                    <Setter Property="Background" Value="#FFEFEFEF" />
+                    <Setter Property="Background" Value="#FFDCDCDC" />
                     <Setter Property="FontWeight" Value="Bold" />
+                    <!-- prevent editing / selection on divider rows -->
                     <Setter Property="IsHitTestVisible" Value="False" />
                 </DataTrigger>
             </Style.Triggers>
@@ -40,7 +36,8 @@
         <!-- Top teal header -->
         <Border DockPanel.Dock="Top"
                 Background="#00AAA8"
-                Padding="10">
+                Padding="10"
+                Height="50">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
@@ -49,17 +46,16 @@
 
                 <TextBlock Text="Workshop Tracker"
                            Foreground="White"
-                           FontSize="22"
+                           FontSize="20"
                            FontWeight="Bold"
                            VerticalAlignment="Center" />
 
-                <StackPanel Orientation="Horizontal"
-                            Grid.Column="1"
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
                             VerticalAlignment="Center">
 
                     <!-- Font size selector -->
                     <StackPanel Orientation="Horizontal"
-                                VerticalAlignment="Center"
                                 Margin="0,0,16,0">
                         <TextBlock Text="Font size:"
                                    Foreground="White"
@@ -76,20 +72,18 @@
 
                     <!-- Search -->
                     <StackPanel Orientation="Horizontal"
-                                VerticalAlignment="Center"
                                 Margin="0,0,16,0">
                         <TextBlock Text="Search:"
                                    Foreground="White"
                                    Margin="0,0,6,0"
                                    VerticalAlignment="Center" />
                         <TextBox x:Name="SearchTextBox"
-                                 Width="200"
+                                 Width="220"
                                  TextChanged="SearchTextBox_TextChanged" />
                     </StackPanel>
 
                     <!-- Buttons -->
-                    <StackPanel Orientation="Horizontal"
-                                VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal">
                         <Button Content="Reload"
                                 Margin="0,0,6,0"
                                 Padding="10,4"
@@ -125,10 +119,11 @@
                               IsReadOnly="False"
                               HeadersVisibility="Column"
                               SelectionMode="Extended"
-                              PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
-                              PreviewMouseMove="DataGrid_PreviewMouseMove"
-                              Drop="DataGrid_Drop"
-                              GridLinesVisibility="All">
+                              GridLinesVisibility="All"
+                              RowEditEnding="DataGrid_RowEditEnding"
+                              BeginningEdit="DataGrid_BeginningEdit"
+                              AllowDrop="True"
+                              Drop="DataGrid_Drop">
 
                         <DataGrid.ContextMenu>
                             <ContextMenu>
@@ -139,7 +134,27 @@
                         </DataGrid.ContextMenu>
 
                         <DataGrid.Columns>
-                            <!-- RETAIL: Y=ORANGE, N=RED -->
+
+                            <!-- GRAB HANDLE COLUMN -->
+                            <DataGridTemplateColumn Header="" Width="24" IsReadOnly="True">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Background="Transparent"
+                                                Cursor="SizeAll"
+                                                PreviewMouseLeftButtonDown="DragHandle_PreviewMouseLeftButtonDown"
+                                                PreviewMouseMove="DragHandle_PreviewMouseMove"
+                                                PreviewMouseLeftButtonUp="DragHandle_PreviewMouseLeftButtonUp">
+                                            <TextBlock Text="≡"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="14"
+                                                       Foreground="Gray" />
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <!-- RETAIL -->
                             <DataGridComboBoxColumn Header="RETAIL"
                                                    Width="60"
                                                    SelectedItemBinding="{Binding Retail, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
@@ -163,7 +178,7 @@
                                 </DataGridComboBoxColumn.CellStyle>
                             </DataGridComboBoxColumn>
 
-                            <!-- OE: Y=ORANGE, N=RED, A/L=LIGHT BLUE -->
+                            <!-- OE -->
                             <DataGridComboBoxColumn Header="OE"
                                                    Width="60"
                                                    SelectedItemBinding="{Binding OE, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
@@ -191,7 +206,7 @@
                                 </DataGridComboBoxColumn.CellStyle>
                             </DataGridComboBoxColumn>
 
-                            <!-- CUSTOMER (yellow if SHAFT = industrial) -->
+                            <!-- CUSTOMER: highlight yellow for industrial -->
                             <DataGridTextColumn Header="CUSTOMER"
                                                 Binding="{Binding Customer, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                 Width="200">
@@ -212,37 +227,28 @@
 
                             <DataGridTextColumn Header="DAY DUE"
                                                 Binding="{Binding DayDue}"
-                                                IsReadOnly="True"
-                                                Width="80" />
+                                                Width="80"
+                                                IsReadOnly="True" />
 
-                            <!-- DATE DUE: coloured TextBlock in view, DatePicker in edit -->
-                            <DataGridTemplateColumn Header="DATE DUE" Width="130">
-                                <!-- Display mode -->
+                            <!-- DATE DUE: fully coloured background -->
+                            <DataGridTemplateColumn Header="DATE DUE"
+                                                    Width="130"
+                                                    SortMemberPath="DateDue">
                                 <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <Border Background="{Binding DateDue, Converter={StaticResource DateDueToBrushConverter}}">
-                                            <TextBlock Text="{Binding DateDue, StringFormat=dd/MM/yyyy}"
-                                                       HorizontalAlignment="Center"
-                                                       VerticalAlignment="Center"
-                                                       Margin="2,0" />
-                                        </Border>
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                                <!-- Edit mode -->
-                                <DataGridTemplateColumn.CellEditingTemplate>
                                     <DataTemplate>
                                         <Border Background="{Binding DateDue, Converter={StaticResource DateDueToBrushConverter}}">
                                             <DatePicker SelectedDate="{Binding DateDue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                         SelectedDateChanged="DateDuePicker_SelectedDateChanged"
-                                                        HorizontalContentAlignment="Center" />
+                                                        HorizontalContentAlignment="Center"
+                                                        Language="en-AU" />
                                         </Border>
                                     </DataTemplate>
-                                </DataGridTemplateColumn.CellEditingTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
 
-                            <!-- STATUS colours -->
+                            <!-- STATUS -->
                             <DataGridComboBoxColumn Header="STATUS"
-                                                   Width="130"
+                                                   Width="140"
                                                    SelectedItemBinding="{Binding Status, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.ItemsSource>
                                     <x:Array Type="{x:Type sys:String}">
@@ -255,6 +261,7 @@
                                         <sys:String>completed</sys:String>
                                         <sys:String>picked up</sys:String>
                                         <sys:String>cancelled</sys:String>
+                                        <sys:String>AWAY</sys:String>
                                     </x:Array>
                                 </DataGridComboBoxColumn.ItemsSource>
                                 <DataGridComboBoxColumn.CellStyle>
@@ -286,6 +293,9 @@
                                             </DataTrigger>
                                             <DataTrigger Binding="{Binding Status}" Value="cancelled">
                                                 <Setter Property="Background" Value="Red" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="AWAY">
+                                                <Setter Property="Background" Value="LightBlue" />
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
@@ -364,6 +374,7 @@
                                                 Binding="{Binding LastUser}"
                                                 IsReadOnly="True"
                                                 Width="120" />
+
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -379,10 +390,11 @@
                               IsReadOnly="False"
                               HeadersVisibility="Column"
                               SelectionMode="Extended"
-                              PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
-                              PreviewMouseMove="DataGrid_PreviewMouseMove"
-                              Drop="DataGrid_Drop"
-                              GridLinesVisibility="All">
+                              GridLinesVisibility="All"
+                              RowEditEnding="DataGrid_RowEditEnding"
+                              BeginningEdit="DataGrid_BeginningEdit"
+                              AllowDrop="True"
+                              Drop="DataGrid_Drop">
 
                         <DataGrid.ContextMenu>
                             <ContextMenu>
@@ -393,6 +405,26 @@
                         </DataGrid.ContextMenu>
 
                         <DataGrid.Columns>
+
+                            <!-- GRAB HANDLE COLUMN -->
+                            <DataGridTemplateColumn Header="" Width="24" IsReadOnly="True">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Border Background="Transparent"
+                                                Cursor="SizeAll"
+                                                PreviewMouseLeftButtonDown="DragHandle_PreviewMouseLeftButtonDown"
+                                                PreviewMouseMove="DragHandle_PreviewMouseMove"
+                                                PreviewMouseLeftButtonUp="DragHandle_PreviewMouseLeftButtonUp">
+                                            <TextBlock Text="≡"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="14"
+                                                       Foreground="Gray" />
+                                        </Border>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
                             <!-- RETAIL -->
                             <DataGridComboBoxColumn Header="RETAIL"
                                                    Width="60"
@@ -466,35 +498,28 @@
 
                             <DataGridTextColumn Header="DAY DUE"
                                                 Binding="{Binding DayDue}"
-                                                IsReadOnly="True"
-                                                Width="80" />
+                                                Width="80"
+                                                IsReadOnly="True" />
 
-                            <!-- DATE DUE: same pattern (text in view, picker in edit) -->
-                            <DataGridTemplateColumn Header="DATE DUE" Width="130">
+                            <!-- DATE DUE -->
+                            <DataGridTemplateColumn Header="DATE DUE"
+                                                    Width="130"
+                                                    SortMemberPath="DateDue">
                                 <DataGridTemplateColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <Border Background="{Binding DateDue, Converter={StaticResource DateDueToBrushConverter}}">
-                                            <TextBlock Text="{Binding DateDue, StringFormat=dd/MM/yyyy}"
-                                                       HorizontalAlignment="Center"
-                                                       VerticalAlignment="Center"
-                                                       Margin="2,0" />
-                                        </Border>
-                                    </DataTemplate>
-                                </DataGridTemplateColumn.CellTemplate>
-                                <DataGridTemplateColumn.CellEditingTemplate>
                                     <DataTemplate>
                                         <Border Background="{Binding DateDue, Converter={StaticResource DateDueToBrushConverter}}">
                                             <DatePicker SelectedDate="{Binding DateDue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                         SelectedDateChanged="DateDuePicker_SelectedDateChanged"
-                                                        HorizontalContentAlignment="Center" />
+                                                        HorizontalContentAlignment="Center"
+                                                        Language="en-AU" />
                                         </Border>
                                     </DataTemplate>
-                                </DataGridTemplateColumn.CellEditingTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
 
                             <!-- STATUS -->
                             <DataGridComboBoxColumn Header="STATUS"
-                                                   Width="130"
+                                                   Width="140"
                                                    SelectedItemBinding="{Binding Status, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.ItemsSource>
                                     <x:Array Type="{x:Type sys:String}">
@@ -616,6 +641,7 @@
                                                 Binding="{Binding LastUser}"
                                                 IsReadOnly="True"
                                                 Width="120" />
+
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
