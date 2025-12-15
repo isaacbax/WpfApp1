@@ -42,7 +42,6 @@ namespace WorkshopTracker.Views
         private bool _isReloading;
         private bool _suppressDateEvents;
         private bool _initialContentRendered;
-        private bool _csvDebugShown;
 
         // Always fall back to this folder if _config is null
         private string BaseFolder =>
@@ -132,6 +131,7 @@ namespace WorkshopTracker.Views
 
                 if (!File.Exists(openPath))
                 {
+                    StatusTextBlock.Text = $"Open CSV not found: {openPath}";
                     _openRows = new ObservableCollection<WorkRow>();
                 }
                 else
@@ -142,6 +142,7 @@ namespace WorkshopTracker.Views
 
                 if (!File.Exists(closedPath))
                 {
+                    StatusTextBlock.Text += $"   Closed CSV not found: {closedPath}";
                     _closedRows = new ObservableCollection<WorkRow>();
                 }
                 else
@@ -150,8 +151,7 @@ namespace WorkshopTracker.Views
                     _closedRows = new ObservableCollection<WorkRow>(closedList);
                 }
 
-                StatusTextBlock.Text =
-                    $"Loaded open={_openRows.Count}, closed={_closedRows.Count}";
+                StatusTextBlock.Text = $"Loaded open={_openRows.Count}, closed={_closedRows.Count}";
             }
             catch (Exception ex)
             {
@@ -441,27 +441,6 @@ namespace WorkshopTracker.Views
             try
             {
                 LoadAll();
-
-                // One-time debug so you can verify paths & counts
-                if (!_csvDebugShown)
-                {
-                    var openPath = GetOpenPath();
-                    var closedPath = GetClosedPath();
-
-                    MessageBox.Show(
-                        $"User:   {_currentUser}\nBranch: {_branch}\n\n" +
-                        $"Open path:   {openPath}\n" +
-                        $"Open exists: {File.Exists(openPath)}\n" +
-                        $"Open rows:   {_openRows.Count}\n\n" +
-                        $"Closed path:   {closedPath}\n" +
-                        $"Closed exists: {File.Exists(closedPath)}\n" +
-                        $"Closed rows:   {_closedRows.Count}",
-                        "WorkshopTracker CSV debug",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Information);
-
-                    _csvDebugShown = true;
-                }
 
                 OpenGrid.ItemsSource = _openRows;
                 ClosedGrid.ItemsSource = _closedRows;

@@ -1,8 +1,17 @@
 ﻿namespace WorkshopTracker.Services
 {
-    public class AppConfig
+    /// <summary>
+    /// Simple singleton-style access to configuration.
+    /// Use AppConfig.Current anywhere you need the shared ConfigServices.
+    /// </summary>
+    public static class AppConfig
     {
-        // Base folder for ALL CSVs
-        public string BaseFolder { get; set; } = @"S:\Public\DesignData\";
+        // Single shared instance for the whole app
+        private static readonly ConfigServices _current = new ConfigServices();
+
+        /// <summary>
+        /// Global configuration instance.
+        /// </summary>
+        public static ConfigServices Current => _current;
     }
 }

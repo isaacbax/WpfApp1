@@ -3,8 +3,14 @@ using System.Globalization;
 using System.Windows.Data;
 using System.Windows.Media;
 
-namespace WorkshopTracker
+namespace WorkshopTracker.Converters
 {
+    /// <summary>
+    /// Colours DATE DUE:
+    /// - Before today: Red
+    /// - Today: Yellow
+    /// - After today: LightGreen
+    /// </summary>
     public class DateDueToBrushConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
@@ -12,26 +18,31 @@ namespace WorkshopTracker
             if (value == null)
                 return Brushes.Transparent;
 
-            if (value is not DateTime date)
+            DateTime date;
+
+            if (value is DateTime dt)
             {
-                if (!DateTime.TryParse(value.ToString(), out date))
-                    return Brushes.Transparent;
+                date = dt;
+            }
+            else if (!DateTime.TryParse(value.ToString(), culture, DateTimeStyles.None, out date))
+            {
+                return Brushes.Transparent;
             }
 
-            date = date.Date;
             var today = DateTime.Today;
 
-            if (date < today)
+            if (date.Date < today)
                 return Brushes.Red;
-            if (date == today)
+            if (date.Date == today)
                 return Brushes.Yellow;
 
-            return Brushes.Green;
+            return Brushes.LightGreen;
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         {
-            // One-way converter – no convert back
+            // We only use this converter one-way (date -> brush),
+            // so we don't need to convert back.
             return Binding.DoNothing;
         }
     }
