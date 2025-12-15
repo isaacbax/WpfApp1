@@ -3,36 +3,36 @@ using System.Globalization;
 using System.Windows.Data;
 using System.Windows.Media;
 
-namespace WorkshopTracker.Converters
+namespace WorkshopTracker
 {
     public class DateDueToBrushConverter : IValueConverter
     {
-        // value: DateTime? (DATE DUE)
-        // return: Brush (Red before today, Yellow today, Green after today)
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
             if (value == null)
                 return Brushes.Transparent;
 
-            if (value is DateTime dt)
+            if (value is not DateTime date)
             {
-                var date = dt.Date;
-                var today = DateTime.Today;
-
-                if (date < today)
-                    return Brushes.Red;
-                if (date == today)
-                    return Brushes.Yellow;
-                return Brushes.LightGreen;
+                if (!DateTime.TryParse(value.ToString(), out date))
+                    return Brushes.Transparent;
             }
 
-            return Brushes.Transparent;
+            date = date.Date;
+            var today = DateTime.Today;
+
+            if (date < today)
+                return Brushes.Red;
+            if (date == today)
+                return Brushes.Yellow;
+
+            return Brushes.Green;
         }
 
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         {
-            // Not used
-            return null!;
+            // One-way converter – no convert back
+            return Binding.DoNothing;
         }
     }
 }

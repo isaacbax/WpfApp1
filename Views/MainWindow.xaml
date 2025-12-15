@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:sys="clr-namespace:System;assembly=mscorlib"
-        xmlns:conv="clr-namespace:WorkshopTracker.Converters"
+        xmlns:conv="clr-namespace:WorkshopTracker"
         mc:Ignorable="d"
         Title="Workshop Tracker"
         Width="1400"
@@ -130,7 +130,7 @@
             </Style.Triggers>
         </Style>
 
-        <!-- PRIORITY Y=Green N=Red -->
+        <!-- PRIORITY: Y=Green N=Red -->
         <Style x:Key="PriorityCellStyle" TargetType="DataGridCell">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding Priority}" Value="Y">
@@ -151,7 +151,7 @@
             </Style.Triggers>
         </Style>
 
-        <!-- DATE DUE cell template: whole cell background from converter -->
+        <!-- DATE DUE: full-cell background via converter -->
         <Style x:Key="DateDueCellStyle" TargetType="DataGridCell">
             <Setter Property="Template">
                 <Setter.Value>
@@ -169,7 +169,7 @@
             </Setter>
         </Style>
 
-        <!-- Group row style -->
+        <!-- Group/divider row style -->
         <Style x:Key="WorkRowStyle" TargetType="DataGridRow">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsGroupRow}" Value="True">
@@ -183,7 +183,8 @@
     </Window.Resources>
 
     <DockPanel>
-        <!-- Single teal header / toolbar -->
+
+        <!-- Top teal header / toolbar -->
         <Border DockPanel.Dock="Top" Background="#FF00AAA8">
             <ToolBar Background="Transparent">
                 <TextBlock Text="Workshop Tracker"
@@ -256,8 +257,8 @@
                         <DataGrid.Columns>
                             <!-- RETAIL -->
                             <DataGridComboBoxColumn Header="RETAIL" Width="60"
-                                ItemsSource="{StaticResource RetailOptions}"
-                                SelectedItemBinding="{Binding Retail, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource RetailOptions}"
+                                                    SelectedItemBinding="{Binding Retail, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource RetailCellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
@@ -265,8 +266,8 @@
 
                             <!-- OE -->
                             <DataGridComboBoxColumn Header="OE" Width="60"
-                                ItemsSource="{StaticResource OEOptions}"
-                                SelectedItemBinding="{Binding OE, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource OEOptions}"
+                                                    SelectedItemBinding="{Binding OE, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource OECellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
@@ -274,17 +275,17 @@
 
                             <!-- CUSTOMER -->
                             <DataGridTextColumn Header="CUSTOMER" Width="150"
-                                Binding="{Binding Customer, UpdateSourceTrigger=PropertyChanged}"
-                                CellStyle="{StaticResource CustomerCellStyle}" />
+                                                Binding="{Binding Customer, UpdateSourceTrigger=PropertyChanged}"
+                                                CellStyle="{StaticResource CustomerCellStyle}" />
 
                             <!-- SERIAL -->
                             <DataGridTextColumn Header="SERIAL" Width="120"
-                                Binding="{Binding Serial, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding Serial, UpdateSourceTrigger=PropertyChanged}" />
 
                             <!-- DAY DUE -->
                             <DataGridComboBoxColumn Header="DAY DUE" Width="70"
-                                ItemsSource="{StaticResource DayDueOptions}"
-                                SelectedItemBinding="{Binding DayDue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                    ItemsSource="{StaticResource DayDueOptions}"
+                                                    SelectedItemBinding="{Binding DayDue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
 
                             <!-- DATE DUE -->
                             <DataGridTemplateColumn Header="DATE DUE" Width="110"
@@ -297,15 +298,16 @@
                                                     BorderThickness="0"
                                                     Padding="0"
                                                     SelectedDateFormat="Short"
-                                                    Language="en-GB"/>
+                                                    Language="en-GB"
+                                                    SelectedDateChanged="DateDuePicker_SelectedDateChanged"/>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
 
                             <!-- STATUS -->
                             <DataGridComboBoxColumn Header="STATUS" Width="100"
-                                ItemsSource="{StaticResource StatusOptions}"
-                                SelectedItemBinding="{Binding Status, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource StatusOptions}"
+                                                    SelectedItemBinding="{Binding Status, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource StatusCellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
@@ -313,28 +315,28 @@
 
                             <!-- QTY -->
                             <DataGridTextColumn Header="QTY" Width="60"
-                                Binding="{Binding Qty, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding Qty, UpdateSourceTrigger=PropertyChanged}" />
 
                             <!-- WHAT IS IT -->
                             <DataGridTextColumn Header="WHAT IS IT" Width="150"
-                                Binding="{Binding WhatIsIt, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding WhatIsIt, UpdateSourceTrigger=PropertyChanged}" />
 
                             <!-- PO -->
                             <DataGridTextColumn Header="PO" Width="120"
-                                Binding="{Binding PO, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding PO, UpdateSourceTrigger=PropertyChanged}" />
 
                             <!-- WHAT ARE WE DOING -->
                             <DataGridTextColumn Header="WHAT ARE WE DOING" Width="200"
-                                Binding="{Binding WhatAreWeDoing, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding WhatAreWeDoing, UpdateSourceTrigger=PropertyChanged}" />
 
                             <!-- PARTS -->
                             <DataGridTextColumn Header="PARTS" Width="200"
-                                Binding="{Binding Parts, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding Parts, UpdateSourceTrigger=PropertyChanged}" />
 
                             <!-- SHAFT -->
                             <DataGridComboBoxColumn Header="SHAFT" Width="90"
-                                ItemsSource="{StaticResource ShaftOptions}"
-                                SelectedItemBinding="{Binding Shaft, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource ShaftOptions}"
+                                                    SelectedItemBinding="{Binding Shaft, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource ShaftCellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
@@ -342,8 +344,8 @@
 
                             <!-- PRIORITY -->
                             <DataGridComboBoxColumn Header="PRIORITY" Width="80"
-                                ItemsSource="{StaticResource PriorityOptions}"
-                                SelectedItemBinding="{Binding Priority, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource PriorityOptions}"
+                                                    SelectedItemBinding="{Binding Priority, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource PriorityCellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
@@ -351,7 +353,7 @@
 
                             <!-- LAST USER -->
                             <DataGridTextColumn Header="LAST USER" Width="100"
-                                Binding="{Binding LastUser}" IsReadOnly="True" />
+                                                Binding="{Binding LastUser}" IsReadOnly="True" />
                         </DataGrid.Columns>
 
                         <DataGrid.ContextMenu>
@@ -384,33 +386,39 @@
                               AllowDrop="True">
 
                         <DataGrid.Columns>
+                            <!-- RETAIL -->
                             <DataGridComboBoxColumn Header="RETAIL" Width="60"
-                                ItemsSource="{StaticResource RetailOptions}"
-                                SelectedItemBinding="{Binding Retail, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource RetailOptions}"
+                                                    SelectedItemBinding="{Binding Retail, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource RetailCellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
                             </DataGridComboBoxColumn>
 
+                            <!-- OE -->
                             <DataGridComboBoxColumn Header="OE" Width="60"
-                                ItemsSource="{StaticResource OEOptions}"
-                                SelectedItemBinding="{Binding OE, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource OEOptions}"
+                                                    SelectedItemBinding="{Binding OE, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource OECellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
                             </DataGridComboBoxColumn>
 
+                            <!-- CUSTOMER -->
                             <DataGridTextColumn Header="CUSTOMER" Width="150"
-                                Binding="{Binding Customer, UpdateSourceTrigger=PropertyChanged}"
-                                CellStyle="{StaticResource CustomerCellStyle}" />
+                                                Binding="{Binding Customer, UpdateSourceTrigger=PropertyChanged}"
+                                                CellStyle="{StaticResource CustomerCellStyle}" />
 
+                            <!-- SERIAL -->
                             <DataGridTextColumn Header="SERIAL" Width="120"
-                                Binding="{Binding Serial, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding Serial, UpdateSourceTrigger=PropertyChanged}" />
 
+                            <!-- DAY DUE -->
                             <DataGridComboBoxColumn Header="DAY DUE" Width="70"
-                                ItemsSource="{StaticResource DayDueOptions}"
-                                SelectedItemBinding="{Binding DayDue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                    ItemsSource="{StaticResource DayDueOptions}"
+                                                    SelectedItemBinding="{Binding DayDue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
 
+                            <!-- DATE DUE -->
                             <DataGridTemplateColumn Header="DATE DUE" Width="110"
                                                     CellStyle="{StaticResource DateDueCellStyle}">
                                 <DataGridTemplateColumn.CellTemplate>
@@ -421,52 +429,62 @@
                                                     BorderThickness="0"
                                                     Padding="0"
                                                     SelectedDateFormat="Short"
-                                                    Language="en-GB"/>
+                                                    Language="en-GB"
+                                                    SelectedDateChanged="DateDuePicker_SelectedDateChanged"/>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
 
+                            <!-- STATUS -->
                             <DataGridComboBoxColumn Header="STATUS" Width="100"
-                                ItemsSource="{StaticResource StatusOptions}"
-                                SelectedItemBinding="{Binding Status, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource StatusOptions}"
+                                                    SelectedItemBinding="{Binding Status, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource StatusCellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
                             </DataGridComboBoxColumn>
 
+                            <!-- QTY -->
                             <DataGridTextColumn Header="QTY" Width="60"
-                                Binding="{Binding Qty, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding Qty, UpdateSourceTrigger=PropertyChanged}" />
 
+                            <!-- WHAT IS IT -->
                             <DataGridTextColumn Header="WHAT IS IT" Width="150"
-                                Binding="{Binding WhatIsIt, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding WhatIsIt, UpdateSourceTrigger=PropertyChanged}" />
 
+                            <!-- PO -->
                             <DataGridTextColumn Header="PO" Width="120"
-                                Binding="{Binding PO, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding PO, UpdateSourceTrigger=PropertyChanged}" />
 
+                            <!-- WHAT ARE WE DOING -->
                             <DataGridTextColumn Header="WHAT ARE WE DOING" Width="200"
-                                Binding="{Binding WhatAreWeDoing, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding WhatAreWeDoing, UpdateSourceTrigger=PropertyChanged}" />
 
+                            <!-- PARTS -->
                             <DataGridTextColumn Header="PARTS" Width="200"
-                                Binding="{Binding Parts, UpdateSourceTrigger=PropertyChanged}" />
+                                                Binding="{Binding Parts, UpdateSourceTrigger=PropertyChanged}" />
 
+                            <!-- SHAFT -->
                             <DataGridComboBoxColumn Header="SHAFT" Width="90"
-                                ItemsSource="{StaticResource ShaftOptions}"
-                                SelectedItemBinding="{Binding Shaft, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource ShaftOptions}"
+                                                    SelectedItemBinding="{Binding Shaft, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource ShaftCellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
                             </DataGridComboBoxColumn>
 
+                            <!-- PRIORITY -->
                             <DataGridComboBoxColumn Header="PRIORITY" Width="80"
-                                ItemsSource="{StaticResource PriorityOptions}"
-                                SelectedItemBinding="{Binding Priority, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                                    ItemsSource="{StaticResource PriorityOptions}"
+                                                    SelectedItemBinding="{Binding Priority, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell" BasedOn="{StaticResource PriorityCellStyle}" />
                                 </DataGridComboBoxColumn.CellStyle>
                             </DataGridComboBoxColumn>
 
+                            <!-- LAST USER -->
                             <DataGridTextColumn Header="LAST USER" Width="100"
-                                Binding="{Binding LastUser}" IsReadOnly="True" />
+                                                Binding="{Binding LastUser}" IsReadOnly="True" />
                         </DataGrid.Columns>
 
                         <DataGrid.ContextMenu>

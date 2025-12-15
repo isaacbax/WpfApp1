@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -18,9 +19,9 @@ namespace WorkshopTracker.Views
 {
     public partial class MainWindow : Window
     {
-        private readonly string _branch;
-        private readonly string _currentUser;
-        private readonly ConfigServices _config;
+        private string _branch = "headoffice";
+        private string _currentUser = "root";
+        private ConfigServices? _config;
 
         private static readonly string[] DateFormats =
         {
@@ -39,12 +40,43 @@ namespace WorkshopTracker.Views
 
         private FileSystemWatcher? _watcher;
         private bool _isReloading;
+        private bool _suppressDateEvents;
+        private bool _initialContentRendered;
+        private bool _csvDebugShown;
 
-        private string BaseFolder => _config.BaseFolder;
+        // Always fall back to this folder if _config is null
+        private string BaseFolder =>
+            _config?.BaseFolder ?? @"S:\Public\DesignData\";
 
+        // -------- default ctor (used by designer / StartupUri) ----------
+        public MainWindow()
+        {
+            CommonInit("headoffice", "root", null);
+        }
+
+        // -------- ctor used from LoginWindow ----------
         public MainWindow(string branch, string currentUser, ConfigServices config)
         {
-            InitializeComponent();
+            CommonInit(branch, currentUser, config);
+        }
+
+        // shared setup for both constructors
+        private void CommonInit(string branch, string currentUser, ConfigServices? config)
+        {
+            try
+            {
+                InitializeComponent();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    ex.ToString(),
+                    "InitializeComponent failed in MainWindow",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+
+                throw;
+            }
 
             _branch = branch;
             _currentUser = currentUser;
@@ -55,9 +87,32 @@ namespace WorkshopTracker.Views
             OpenGrid.CellEditEnding += WorkGrid_CellEditEnding;
             ClosedGrid.CellEditEnding += WorkGrid_CellEditEnding;
 
-            Loaded += MainWindow_Loaded;
+            // Load data AFTER first paint so UI doesn't stay white
+            this.ContentRendered += MainWindow_ContentRendered;
 
             InitFileWatcher();
+        }
+
+        private void MainWindow_ContentRendered(object? sender, EventArgs e)
+        {
+            if (_initialContentRendered)
+                return;
+
+            _initialContentRendered = true;
+
+            try
+            {
+                ReloadFromDisk();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    ex.ToString(),
+                    "ReloadFromDisk error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                StatusTextBlock.Text = "Error loading data – see message.";
+            }
         }
 
         #region Paths & IO
@@ -72,15 +127,37 @@ namespace WorkshopTracker.Views
         {
             try
             {
-                _openRows = new ObservableCollection<WorkRow>(
-                    File.Exists(GetOpenPath()) ? LoadFromCsv(GetOpenPath()) : new List<WorkRow>());
+                var openPath = GetOpenPath();
+                var closedPath = GetClosedPath();
 
-                _closedRows = new ObservableCollection<WorkRow>(
-                    File.Exists(GetClosedPath()) ? LoadFromCsv(GetClosedPath()) : new List<WorkRow>());
+                if (!File.Exists(openPath))
+                {
+                    _openRows = new ObservableCollection<WorkRow>();
+                }
+                else
+                {
+                    var openList = LoadFromCsv(openPath);
+                    _openRows = new ObservableCollection<WorkRow>(openList);
+                }
+
+                if (!File.Exists(closedPath))
+                {
+                    _closedRows = new ObservableCollection<WorkRow>();
+                }
+                else
+                {
+                    var closedList = LoadFromCsv(closedPath);
+                    _closedRows = new ObservableCollection<WorkRow>(closedList);
+                }
+
+                StatusTextBlock.Text =
+                    $"Loaded open={_openRows.Count}, closed={_closedRows.Count}";
             }
-            catch (IOException ex)
+            catch (Exception ex)
             {
                 StatusTextBlock.Text = $"Error loading CSVs: {ex.Message}";
+                _openRows = new ObservableCollection<WorkRow>();
+                _closedRows = new ObservableCollection<WorkRow>();
             }
         }
 
@@ -96,7 +173,7 @@ namespace WorkshopTracker.Views
 
                 StatusTextBlock.Text = $"Saved at {DateTime.Now:T}";
             }
-            catch (IOException ex)
+            catch (Exception ex)
             {
                 StatusTextBlock.Text = $"Error saving CSVs: {ex.Message}";
             }
@@ -107,6 +184,59 @@ namespace WorkshopTracker.Views
             }
         }
 
+        /// <summary>
+        /// Robust CSV line splitter that understands quotes and commas inside fields.
+        /// </summary>
+        private static string[] SplitCsvLine(string line)
+        {
+            var result = new List<string>();
+            if (string.IsNullOrEmpty(line))
+            {
+                result.Add(string.Empty);
+                return result.ToArray();
+            }
+
+            bool inQuotes = false;
+            var current = new StringBuilder();
+
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+
+                if (c == '"')
+                {
+                    if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
+                    {
+                        // Escaped quote
+                        current.Append('"');
+                        i++; // skip second quote
+                    }
+                    else
+                    {
+                        inQuotes = !inQuotes;
+                    }
+                }
+                else if (c == ',' && !inQuotes)
+                {
+                    result.Add(current.ToString());
+                    current.Clear();
+                }
+                else
+                {
+                    current.Append(c);
+                }
+            }
+
+            result.Add(current.ToString());
+            return result.ToArray();
+        }
+
+        /// <summary>
+        /// Load rows from CSV.
+        /// Supports both legacy 14-column files and the newer 15-column format
+        /// that includes "LAST USER" as the final column.
+        /// Works even when fields contain commas (quoted).
+        /// </summary>
         private static List<WorkRow> LoadFromCsv(string path)
         {
             var result = new List<WorkRow>();
@@ -122,30 +252,36 @@ namespace WorkshopTracker.Views
                 if (string.IsNullOrWhiteSpace(line))
                     continue;
 
-                var parts = line.Split(',');
-                if (parts.Length < 15)
+                var parts = SplitCsvLine(line);
+
+                // Minimum we expect: 14 columns (no LAST USER in older files)
+                if (parts.Length < 14)
                     continue;
+
+                string GetPart(int index) =>
+                    index < parts.Length ? parts[index] : string.Empty;
 
                 var row = new WorkRow
                 {
-                    Retail = parts[0],
-                    OE = parts[1],
-                    Customer = parts[2],
-                    Serial = parts[3],
-                    DayDue = parts[4],
-                    DateDue = ParseNullableDate(parts[5]),
-                    Status = parts[6],
-                    Qty = ParseInt(parts[7]),
-                    WhatIsIt = parts[8],
-                    PO = parts[9],
-                    WhatAreWeDoing = parts[10],
-                    Parts = parts[11],
-                    Shaft = parts[12],
-                    Priority = parts[13],
-                    LastUser = parts[14]
+                    Retail = GetPart(0),
+                    OE = GetPart(1),
+                    Customer = GetPart(2),
+                    Serial = GetPart(3),
+                    DayDue = GetPart(4),
+                    DateDue = ParseNullableDate(GetPart(5)),
+                    Status = GetPart(6),
+                    Qty = ParseInt(GetPart(7)),
+                    WhatIsIt = GetPart(8),
+                    PO = GetPart(9),
+                    WhatAreWeDoing = GetPart(10),
+                    Parts = GetPart(11),
+                    Shaft = GetPart(12),
+                    Priority = GetPart(13),
+                    // LAST USER is optional (column 14). If missing, it will be ""
+                    LastUser = parts.Length > 14 ? GetPart(14) : string.Empty
                 };
 
-                // Auto-fill DayDue from DateDue if missing
+                // Auto-fill DAY DUE from DATE DUE if missing
                 if (string.IsNullOrWhiteSpace(row.DayDue) && row.DateDue.HasValue)
                 {
                     row.DayDue = DayOfWeekToShortName(row.DateDue.Value);
@@ -260,6 +396,7 @@ namespace WorkshopTracker.Views
             }
             catch
             {
+                // If watcher fails (e.g. permissions), just run without live reload
             }
         }
 
@@ -283,7 +420,7 @@ namespace WorkshopTracker.Views
                     ReloadFromDisk();
                     StatusTextBlock.Text = $"Auto-reloaded at {DateTime.Now:T}";
                 }
-                catch (IOException ex)
+                catch (Exception ex)
                 {
                     StatusTextBlock.Text = $"Auto-reload error: {ex.Message}";
                 }
@@ -298,30 +435,54 @@ namespace WorkshopTracker.Views
 
         #region Lifecycle & status rules
 
-        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
-        {
-            ReloadFromDisk();
-        }
-
         private void ReloadFromDisk()
         {
-            LoadAll();
+            _suppressDateEvents = true;
+            try
+            {
+                LoadAll();
 
-            OpenGrid.ItemsSource = _openRows;
-            ClosedGrid.ItemsSource = _closedRows;
+                // One-time debug so you can verify paths & counts
+                if (!_csvDebugShown)
+                {
+                    var openPath = GetOpenPath();
+                    var closedPath = GetClosedPath();
 
-            _openView = CollectionViewSource.GetDefaultView(OpenGrid.ItemsSource);
-            _closedView = CollectionViewSource.GetDefaultView(ClosedGrid.ItemsSource);
+                    MessageBox.Show(
+                        $"User:   {_currentUser}\nBranch: {_branch}\n\n" +
+                        $"Open path:   {openPath}\n" +
+                        $"Open exists: {File.Exists(openPath)}\n" +
+                        $"Open rows:   {_openRows.Count}\n\n" +
+                        $"Closed path:   {closedPath}\n" +
+                        $"Closed exists: {File.Exists(closedPath)}\n" +
+                        $"Closed rows:   {_closedRows.Count}",
+                        "WorkshopTracker CSV debug",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
 
-            if (_openView != null)
-                _openView.Filter = OpenFilter;
+                    _csvDebugShown = true;
+                }
 
-            if (_closedView != null)
-                _closedView.Filter = ClosedFilter;
+                OpenGrid.ItemsSource = _openRows;
+                ClosedGrid.ItemsSource = _closedRows;
 
-            MoveExistingClosedStatusesToClosed();
-            RebuildOpenWithDividers();
-            RefreshViews();
+                _openView = CollectionViewSource.GetDefaultView(OpenGrid.ItemsSource);
+                _closedView = CollectionViewSource.GetDefaultView(ClosedGrid.ItemsSource);
+
+                if (_openView != null)
+                    _openView.Filter = OpenFilter;
+
+                if (_closedView != null)
+                    _closedView.Filter = ClosedFilter;
+
+                MoveExistingClosedStatusesToClosed();
+                RebuildOpenWithDividers();
+                RefreshViews();
+            }
+            finally
+            {
+                _suppressDateEvents = false;
+            }
         }
 
         private static bool IsClosedStatus(string? status)
@@ -356,12 +517,7 @@ namespace WorkshopTracker.Views
                 e.Column?.Header != null &&
                 string.Equals(e.Column.Header.ToString(), "STATUS", StringComparison.OrdinalIgnoreCase);
 
-            bool isDateDueColumn =
-                e.Column?.Header != null &&
-                string.Equals(e.Column.Header.ToString(), "DATE DUE", StringComparison.OrdinalIgnoreCase);
-
             string? newStatus = null;
-            DateTime? newDateDue = null;
 
             if (isStatusColumn)
             {
@@ -376,44 +532,58 @@ namespace WorkshopTracker.Views
                     newStatus = newStatus.Trim();
             }
 
-            if (isDateDueColumn)
-            {
-                if (e.EditingElement is DatePicker dp)
-                {
-                    newDateDue = dp.SelectedDate?.Date;
-                }
-            }
-
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                // If DATE DUE was edited, update DateDue + DayDue first
-                if (isDateDueColumn && newDateDue.HasValue)
-                {
-                    rowItem.DateDue = newDateDue.Value;
-                    rowItem.DayDue = DayOfWeekToShortName(newDateDue.Value);
-                    // Rebuild dividers/date order whenever date changes
-                    if (grid == OpenGrid)
-                        RebuildOpenWithDividers();
-                }
-                else
-                {
-                    // If other columns (not DATE DUE) edited in open grid, still keep dividers
-                    if (grid == OpenGrid)
-                        RebuildOpenWithDividers();
-                }
-
-                // If STATUS changed, apply status rules (move to Closed, paint shop ordering)
                 if (isStatusColumn && newStatus != null)
                 {
                     ApplyStatusRules(grid, rowItem, newStatus);
                 }
+                else
+                {
+                    if (grid == OpenGrid)
+                        RebuildOpenWithDividers();
+                }
 
-                // Update last user on any edit
                 rowItem.LastUser = _currentUser;
 
                 SaveAll();
                 RefreshViews();
             }), DispatcherPriority.Background);
+        }
+
+        /// <summary>
+        /// Fired by DatePicker in both grids.
+        /// Keeps DateDue, DayDue, grouping & sorting in sync.
+        /// </summary>
+        private void DateDuePicker_SelectedDateChanged(object? sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressDateEvents)
+                return;
+
+            if (sender is not DatePicker dp)
+                return;
+
+            if (dp.DataContext is not WorkRow row || row.IsGroupRow)
+                return;
+
+            if (dp.SelectedDate is DateTime date)
+            {
+                row.DateDue = date.Date;
+                row.DayDue = DayOfWeekToShortName(date.Date);
+            }
+            else
+            {
+                row.DateDue = null;
+                row.DayDue = string.Empty;
+            }
+
+            row.LastUser = _currentUser;
+
+            if (_openRows.Contains(row))
+                RebuildOpenWithDividers();
+
+            SaveAll();
+            RefreshViews();
         }
 
         private void ApplyStatusRules(DataGrid editingGrid, WorkRow rowItem, string newStatus)
@@ -426,7 +596,6 @@ namespace WorkshopTracker.Views
                 MoveRowBetweenCollections(_openRows, _closedRows, rowItem);
             }
 
-            // Ensure Open grid is in the right order
             RebuildOpenWithDividers();
         }
 
@@ -462,45 +631,53 @@ namespace WorkshopTracker.Views
         /// </summary>
         private void RebuildOpenWithDividers()
         {
-            var baseRows = _openRows.Where(r => !r.IsGroupRow).ToList();
-
-            var paintRows = baseRows
-                .Where(r => IsPaintShopStatus(r.Status))
-                .OrderBy(r => r.DateDue ?? DateTime.MaxValue)
-                .ToList();
-
-            var otherRows = baseRows
-                .Where(r => !IsPaintShopStatus(r.Status))
-                .OrderBy(r => r.DateDue ?? DateTime.MaxValue)
-                .ToList();
-
-            var ordered = new List<WorkRow>();
-            ordered.AddRange(paintRows);
-            ordered.AddRange(otherRows);
-
-            _openRows.Clear();
-
-            DateTime? currentDate = null;
-            bool first = true;
-
-            foreach (var row in ordered)
+            _suppressDateEvents = true;
+            try
             {
-                var date = row.DateDue?.Date;
+                var baseRows = _openRows.Where(r => !r.IsGroupRow).ToList();
 
-                if (date.HasValue && (first || currentDate == null || date.Value != currentDate.Value))
+                var paintRows = baseRows
+                    .Where(r => IsPaintShopStatus(r.Status))
+                    .OrderBy(r => r.DateDue ?? DateTime.MaxValue)
+                    .ToList();
+
+                var otherRows = baseRows
+                    .Where(r => !IsPaintShopStatus(r.Status))
+                    .OrderBy(r => r.DateDue ?? DateTime.MaxValue)
+                    .ToList();
+
+                var ordered = new List<WorkRow>();
+                ordered.AddRange(paintRows);
+                ordered.AddRange(otherRows);
+
+                _openRows.Clear();
+
+                DateTime? currentDate = null;
+                bool first = true;
+
+                foreach (var row in ordered)
                 {
-                    currentDate = date.Value;
-                    first = false;
+                    var date = row.DateDue?.Date;
 
-                    _openRows.Add(new WorkRow
+                    if (date.HasValue && (first || currentDate == null || date.Value != currentDate.Value))
                     {
-                        IsGroupRow = true,
-                        Customer = currentDate.Value.ToString("dd/MM/yyyy"),
-                        DateDue = currentDate.Value
-                    });
-                }
+                        currentDate = date.Value;
+                        first = false;
 
-                _openRows.Add(row);
+                        _openRows.Add(new WorkRow
+                        {
+                            IsGroupRow = true,
+                            Customer = currentDate.Value.ToString("dd/MM/yyyy"),
+                            DateDue = currentDate.Value
+                        });
+                    }
+
+                    _openRows.Add(row);
+                }
+            }
+            finally
+            {
+                _suppressDateEvents = false;
             }
         }
 
@@ -510,8 +687,15 @@ namespace WorkshopTracker.Views
 
         private void Reload_Click(object sender, RoutedEventArgs e)
         {
-            ReloadFromDisk();
-            StatusTextBlock.Text = "Reloaded";
+            try
+            {
+                ReloadFromDisk();
+                StatusTextBlock.Text = "Reloaded";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.ToString(), "Reload error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void Save_Click(object sender, RoutedEventArgs e)
