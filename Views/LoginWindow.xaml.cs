@@ -3,28 +3,40 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Windows;
-using System.Windows.Controls;
-using WorkshopTracker.Views;
+using System.Windows.Media.Imaging;
+using WorkshopTracker.Models;      // Adjust if UserRecord is in a different namespace
 
 namespace WorkshopTracker.Views
 {
     public partial class LoginWindow : Window
     {
-        private const string UsersCsvPath = @"S:\Public\DesignData\users.csv";
+        // Folder containing users.csv, headofficeopen.csv, etc.
+        private const string BaseFolder = @"S:\Public\DesignData\";
 
-        private class UserRecord
-        {
-            public string Username { get; set; } = string.Empty;
-            public string Password { get; set; } = string.Empty;
-            public string Branch { get; set; } = string.Empty;
-        }
-
-        private List<UserRecord> _users = new();
+        private readonly List<UserRecord> _users = new();
 
         public LoginWindow()
         {
             InitializeComponent();
+
+            // Try to apply window icon, but never crash if it fails
+            TrySetWindowIcon();
+
             Loaded += LoginWindow_Loaded;
+        }
+
+        private void TrySetWindowIcon()
+        {
+            try
+            {
+                // expects getsitelogo.ico added to project under Assets/ with Build Action = Resource
+                var uri = new Uri("pack://application:,,,/Assets/getsitelogo.ico", UriKind.Absolute);
+                Icon = BitmapFrame.Create(uri);
+            }
+            catch
+            {
+                // If the icon is missing/invalid, just ignore – app should still run
+            }
         }
 
         private void LoginWindow_Loaded(object sender, RoutedEventArgs e)
@@ -34,23 +46,40 @@ namespace WorkshopTracker.Views
 
         private void LoadUsers()
         {
-            _users.Clear();
+            string usersPath = Path.Combine(BaseFolder, "users.csv");
 
-            if (!File.Exists(UsersCsvPath))
+            _users.Clear();
+            BranchComboBox.Items.Clear();
+
+            if (!File.Exists(usersPath))
             {
                 MessageBox.Show(
-                    $"users.csv not found at:\n{UsersCsvPath}",
+                    $"users.csv not found at:\n{usersPath}",
                     "Login Error",
                     MessageBoxButton.OK,
                     MessageBoxImage.Error);
                 return;
             }
 
-            var lines = File.ReadAllLines(UsersCsvPath);
-            if (lines.Length <= 1)
-                return; // header only
+            string[] lines;
+            try
+            {
+                // users.csv is small, simple ReadAllLines is fine
+                lines = File.ReadAllLines(usersPath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Unable to read users.csv:\n{ex.Message}",
+                    "Login Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                return;
+            }
 
-            // header: username,password,branch
+            if (lines.Length <= 1)
+                return;
+
             for (int i = 1; i < lines.Length; i++)
             {
                 var line = lines[i];
@@ -61,14 +90,17 @@ namespace WorkshopTracker.Views
                 if (cols.Length < 3)
                     continue;
 
-                _users.Add(new UserRecord
+                var user = new UserRecord
                 {
                     Username = cols[0].Trim(),
                     Password = cols[1].Trim(),
                     Branch = cols[2].Trim()
-                });
+                };
+
+                _users.Add(user);
             }
 
+            // Distinct list of branches for the root dropdown
             var branches = _users
                 .Select(u => u.Branch)
                 .Where(b => !string.IsNullOrWhiteSpace(b))
@@ -76,77 +108,70 @@ namespace WorkshopTracker.Views
                 .OrderBy(b => b)
                 .ToList();
 
-            BranchComboBox.ItemsSource = branches;
+            foreach (var b in branches)
+                BranchComboBox.Items.Add(b);
+
+            if (branches.Count > 0)
+                BranchComboBox.SelectedIndex = 0;
         }
 
         private void LoginButton_Click(object sender, RoutedEventArgs e)
         {
             var username = UsernameTextBox.Text.Trim();
             var password = PasswordBox.Password.Trim();
-            var selectedBranch = BranchComboBox.SelectedItem as string;
 
             if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
             {
-                MessageBox.Show("Please enter username and password.",
-                    "Login", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Please enter a username and password.",
+                    "Login",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
                 return;
             }
 
-            // Root user: can choose any branch
-            if (string.Equals(username, "root", StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(password, "root", StringComparison.OrdinalIgnoreCase))
-            {
-                if (string.IsNullOrEmpty(selectedBranch))
-                {
-                    MessageBox.Show("Please select a branch for root login.",
-                        "Login", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-
-                OpenMainWindow("root", selectedBranch);
-                return;
-            }
-
-            // Normal user must be found in users.csv
             var user = _users.FirstOrDefault(u =>
                 string.Equals(u.Username, username, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(u.Password, password, StringComparison.Ordinal));
+                u.Password == password);
 
             if (user == null)
             {
                 MessageBox.Show("Invalid username or password.",
-                    "Login", MessageBoxButton.OK, MessageBoxImage.Error);
+                    "Login",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(user.Branch))
+            string branch;
+
+            // root user can choose any branch from the ComboBox
+            if (string.Equals(user.Username, "root", StringComparison.OrdinalIgnoreCase))
             {
-                MessageBox.Show("Your account does not have a branch assigned.",
-                    "Login", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
+                if (BranchComboBox.SelectedItem == null)
+                {
+                    MessageBox.Show("Please select a branch.",
+                        "Login",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                    return;
+                }
+
+                branch = BranchComboBox.SelectedItem.ToString()!;
+            }
+            else
+            {
+                // normal users always use their branch from users.csv
+                branch = user.Branch;
             }
 
-            OpenMainWindow(user.Username, user.Branch);
-        }
-
-        private void OpenMainWindow(string username, string branch)
-        {
-            try
-            {
-                var main = new MainWindow(username, branch);
-                main.Show();
-                Close();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error opening main window:\n{ex.Message}",
-                    "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
-        private void Close_Click(object sender, RoutedEventArgs e)
-        {
+            var main = new MainWindow(user.Username, branch);
+            main.Show();
             Close();
+        }
+
+        private void ExitButton_Click(object sender, RoutedEventArgs e)
+        {
+            Application.Current.Shutdown();
         }
     }
 }

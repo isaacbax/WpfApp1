@@ -5,6 +5,29 @@
 		<TargetFramework>net8.0-windows</TargetFramework>
 		<UseWPF>true</UseWPF>
 		<Nullable>enable</Nullable>
+		<PackageIcon>getsitelogo.ico</PackageIcon>
+		<ApplicationIcon>getsitelogo.ico</ApplicationIcon>
 	</PropertyGroup>
+
+	<ItemGroup>
+	  <None Remove="Assets\getsitelogo.ico" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Content Include="getsitelogo.ico" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <None Include="S:\Public\DesignData\getsitelogo.ico">
+	    <Pack>True</Pack>
+	    <PackagePath>\</PackagePath>
+	  </None>
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Resource Include="Assets\getsitelogo.ico">
+	    <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+	  </Resource>
+	</ItemGroup>
 
 </Project>
