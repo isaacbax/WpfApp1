@@ -5,8 +5,8 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="Workshop Tracker - Login"
-        Height="260"
-        Width="600"
+        Height="225"
+        Width="352"
         WindowStartupLocation="CenterScreen">
 
     <Grid Margin="10">
