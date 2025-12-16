@@ -264,6 +264,14 @@
                                         <sys:String>AWAY</sys:String>
                                     </x:Array>
                                 </DataGridComboBoxColumn.ItemsSource>
+
+                                <DataGridComboBoxColumn.EditingElementStyle>
+                                    <Style TargetType="ComboBox">
+                                        <EventSetter Event="Loaded" Handler="StatusComboBox_Loaded"/>
+                                        <EventSetter Event="SelectionChanged" Handler="StatusComboBox_SelectionChanged"/>
+                                    </Style>
+                                </DataGridComboBoxColumn.EditingElementStyle>
+
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell">
                                         <Style.Triggers>
@@ -534,6 +542,14 @@
                                         <sys:String>cancelled</sys:String>
                                     </x:Array>
                                 </DataGridComboBoxColumn.ItemsSource>
+
+                                <DataGridComboBoxColumn.EditingElementStyle>
+                                    <Style TargetType="ComboBox">
+                                        <EventSetter Event="Loaded" Handler="StatusComboBox_Loaded"/>
+                                        <EventSetter Event="SelectionChanged" Handler="StatusComboBox_SelectionChanged"/>
+                                    </Style>
+                                </DataGridComboBoxColumn.EditingElementStyle>
+
                                 <DataGridComboBoxColumn.CellStyle>
                                     <Style TargetType="DataGridCell">
                                         <Style.Triggers>

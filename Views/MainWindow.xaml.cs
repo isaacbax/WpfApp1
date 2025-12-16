@@ -567,6 +567,113 @@ namespace WorkshopTracker.Views
             SaveAll();
         }
 
+
+
+        // ---------- STATUS CHANGES (move between open/closed + autosave) ----------
+
+        private void StatusComboBox_Loaded(object sender, RoutedEventArgs e)
+        {
+            // Used to ignore the first SelectionChanged that fires when the ComboBox is created/bound.
+            if (sender is ComboBox cb && cb.Tag == null)
+                cb.Tag = "INIT";
+        }
+
+        private void StatusComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isLoading) return;
+            if (sender is not ComboBox cb) return;
+            if (cb.DataContext is not WorkRow row || row.IsGroupRow) return;
+
+            // WPF fires SelectionChanged once when the ComboBox first binds its SelectedItem.
+            // Ignore that first event so the dropdown doesn't instantly close/move the row.
+            if (cb.Tag as string != "READY")
+            {
+                cb.Tag = "READY";
+                return;
+            }
+
+            // Let binding update row.Status first, then migrate if required.
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                var grid = FindVisualParent<DataGrid>(cb);
+                if (grid == null) return;
+
+                try
+                {
+                    grid.CommitEdit(DataGridEditingUnit.Cell, true);
+                    grid.CommitEdit(DataGridEditingUnit.Row, true);
+                }
+                catch
+                {
+                    // Don't block the UI if commit fails.
+                }
+
+                // Status changes can move the row before RowEditEnding fires,
+                // so ensure we clear editing state here to keep live-refresh working.
+                _isEditingRow = false;
+
+                row.LastUser = _username;
+
+                if (grid == OpenGrid && IsClosingStatus(row.Status))
+                    MoveRowOpenToClosed(row);
+                else if (grid == ClosedGrid && !IsClosingStatus(row.Status))
+                    MoveRowClosedToOpen(row);
+
+                // Always save on status change (so other PCs pick it up quickly).
+                SaveAll();
+
+                // If a file change happened while editing earlier, reload now.
+                if (_pendingReload)
+                {
+                    _pendingReload = false;
+                    StatusTextBlock.Text = "External changes detected, reloading…";
+                    LoadData();
+                }
+
+            }), DispatcherPriority.Background);
+        }
+
+        private bool IsClosingStatus(string? status) =>
+            EqualsIgnoreCase(status, "picked up") || EqualsIgnoreCase(status, "cancelled");
+
+        private bool MoveRowOpenToClosed(WorkRow row)
+        {
+            var openCore = _openRows.Where(r => !r.IsGroupRow).ToList();
+            var closedCore = _closedRows.Where(r => !r.IsGroupRow).ToList();
+
+            if (!openCore.Remove(row))
+                return false;
+
+            closedCore.Add(row);
+
+            _openRows = new ObservableCollection<WorkRow>(InsertDayDividers(openCore));
+            _closedRows = new ObservableCollection<WorkRow>(InsertDayDividers(closedCore));
+
+            OpenGrid.ItemsSource = _openRows;
+            ClosedGrid.ItemsSource = _closedRows;
+
+            return true;
+        }
+
+        private bool MoveRowClosedToOpen(WorkRow row)
+        {
+            var openCore = _openRows.Where(r => !r.IsGroupRow).ToList();
+            var closedCore = _closedRows.Where(r => !r.IsGroupRow).ToList();
+
+            if (!closedCore.Remove(row))
+                return false;
+
+            openCore.Add(row);
+
+            _openRows = new ObservableCollection<WorkRow>(InsertDayDividers(openCore));
+            _closedRows = new ObservableCollection<WorkRow>(InsertDayDividers(closedCore));
+
+            OpenGrid.ItemsSource = _openRows;
+            ClosedGrid.ItemsSource = _closedRows;
+
+            return true;
+        }
+
         // ---------- ROW EDIT AUTOSAVE & EDIT TRACKING ----------
 
         private void DataGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
@@ -587,10 +694,17 @@ namespace WorkshopTracker.Views
 
             Dispatcher.BeginInvoke(new Action(() =>
             {
+
                 if (e.Row.Item is WorkRow row && !row.IsGroupRow)
                 {
-                    // Only this row gets its LastUser updated
                     row.LastUser = _username;
+
+                    var grid = sender as DataGrid;
+                    if (grid == OpenGrid && IsClosingStatus(row.Status))
+                        MoveRowOpenToClosed(row);
+                    else if (grid == ClosedGrid && !IsClosingStatus(row.Status))
+                        MoveRowClosedToOpen(row);
+
                     SaveAll();
                 }
 
